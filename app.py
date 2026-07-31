@@ -4,6 +4,7 @@ import html
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
+from datetime import datetime
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -18,6 +19,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Initialize Session State for Audit History
+if "verification_history" not in st.session_state:
+    st.session_state.verification_history = []
 
 # Custom Command Center Glassmorphism Styling
 st.markdown("""
@@ -92,6 +97,18 @@ st.markdown("""
         height: 100%;
         border-radius: 8px;
         transition: width 0.6s ease;
+    }
+
+    /* WhatsApp Card Custom Styling */
+    .whatsapp-card-box {
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid #22c55e;
+        border-radius: 14px;
+        padding: 18px;
+        font-family: monospace;
+        color: #e2e8f0;
+        white-space: pre-wrap;
+        box-shadow: 0 4px 15px rgba(34, 197, 94, 0.15);
     }
 
     /* Streamlit Input Fixes */
@@ -436,6 +453,95 @@ def fetch_and_corroborate_live_sources(claim: str):
 
     return [], 0.0, 0, False
 
+def evaluate_source_credibility(sources):
+    """
+    Evaluates source domain authority and assigns credibility tiers.
+    Tier 1: High Trust / Tier 2: General / Tier 3: Unverified
+    """
+    tier_1_keywords = [
+        "pib", "reuters", "bbc", "indian express", "the hindu", "ap news", "pti",
+        "press trust of india", "isro", "who", "nasa", "rbi", "reserve bank",
+        "supreme court", "financial express", "economic times", "business standard",
+        "ndtv", "times of india", "hindustan times", "alt news", "boom live",
+        "snopes", "mint", "wire", "scroll", "aaj tak", "lok sabha"
+    ]
+    
+    evaluated = []
+    t1_count, t2_count, t3_count = 0, 0, 0
+    
+    for s in sources:
+        title_lower = s.get('title', '').lower()
+        snippet_lower = s.get('snippet', '').lower()
+        url_lower = s.get('url', '').lower()
+        text_comb = f"{title_lower} {snippet_lower} {url_lower}"
+        
+        is_t1 = any(kw in text_comb for kw in tier_1_keywords)
+        
+        if is_t1:
+            tier_label = "🟢 Tier 1 (High Trust / Official News Outlet)"
+            tier_badge = "Tier 1 — High Trust"
+            badge_color = "#22c55e"
+            t1_count += 1
+        elif "blog" in text_comb or "forum" in text_comb or "wordpress" in text_comb:
+            tier_label = "🔴 Tier 3 (Unverified Blog / Social Post)"
+            tier_badge = "Tier 3 — High Risk"
+            badge_color = "#ef4444"
+            t3_count += 1
+        else:
+            tier_label = "🟡 Tier 2 (General News / Aggregator)"
+            tier_badge = "Tier 2 — Medium Trust"
+            badge_color = "#f59e0b"
+            t2_count += 1
+            
+        evaluated.append({
+            "title": s.get('title', ''),
+            "url": s.get('url', '#'),
+            "engine": s.get('engine', 'Search Engine'),
+            "similarity": s.get('similarity', 0),
+            "tier_label": tier_label,
+            "tier_badge": tier_badge,
+            "badge_color": badge_color,
+            "snippet": s.get('snippet', '')
+        })
+        
+    return evaluated, {"t1": t1_count, "t2": t2_count, "t3": t3_count}
+
+def generate_whatsapp_card(claim, verdict, verdict_icon, composite_truth_index, corroboration_score, ling_metrics, sources):
+    """
+    Generates a ready-to-copy WhatsApp formatted message card for instant sharing.
+    """
+    timestamp = datetime.now().strftime("%d %b %Y, %I:%M %p")
+    short_claim = claim[:120] + "..." if len(claim) > 120 else claim
+    
+    source_lines = []
+    if sources:
+        for s in sources[:2]:
+            source_lines.append(f"• {s['title'][:55]}...")
+        source_str = "\n".join(source_lines)
+    else:
+        source_str = "• No matching live coverage found."
+        
+    card_text = f"""❌ *VERIFACT AI FACT-CHECK ALERT* ❌
+
+📌 *Claim Analyzed:*
+"{short_claim}"
+
+📊 *Verification Status:* {verdict_icon} {verdict}
+🛡️ *Truth Index:* {composite_truth_index}%
+🌐 *Web Grounding Score:* {corroboration_score}%
+
+💡 *Key Metrics:*
+• Sensationalism Risk: {ling_metrics['sensationalism_score']}/100
+• Journalistic Tone: {ling_metrics['journalistic_score']}/100
+
+🔗 *Verified News Coverage:*
+{source_str}
+
+⏰ *Checked:* {timestamp}
+_Verified via VeriFact AI Engine_"""
+
+    return card_text
+
 st.sidebar.markdown("### 📋 Verification Benchmarks")
 st.sidebar.markdown("Select a sample claim to test live verification:")
 
@@ -451,12 +557,17 @@ sample_claims = {
 selected_sample = st.sidebar.selectbox("Choose Sample:", list(sample_claims.keys()))
 default_text = sample_claims[selected_sample] if selected_sample != "Select a benchmark..." else ""
 
+# Sidebar Audit Trail Quick Access
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📜 Session History Counter")
+st.sidebar.info(f"Claims Verified This Session: **{len(st.session_state.verification_history)}**")
+
 st.markdown("""
 <div class="command-header">
     <div style="display: flex; align-items: center; justify-content: space-between;">
         <div>
             <h1 class="command-title">🛡️ VeriFact AI — Command Center</h1>
-            <p class="command-subtitle">100% Free Grounded News Corroboration Engine — Google News RSS + TF-IDF Vector Analysis</p>
+            <p class="command-subtitle">Grounding News Corroboration Engine — Google News RSS + TF-IDF Vector Math + WhatsApp Debunk Card</p>
         </div>
         <div style="text-align: right; font-size: 12px; color: #34d399; font-weight: 700; background: rgba(52, 211, 153, 0.1); padding: 6px 12px; border-radius: 20px; border: 1px solid rgba(52, 211, 153, 0.3);">
             ● LIVE ENGINE ONLINE
@@ -524,8 +635,29 @@ if analyze_btn and user_claim.strip():
             verdict_color = "#f59e0b"
             verdict_icon = "⚠️"
 
+        # Evaluate Source Credibility Tiers
+        eval_sources, tier_counts = evaluate_source_credibility(sources)
+        
+        # Generate WhatsApp Share Card
+        whatsapp_card_text = generate_whatsapp_card(
+            user_claim, verdict, verdict_icon, composite_truth_index, 
+            corroboration_score, ling_metrics, sources
+        )
+
+        # Log to Session Verification History
+        st.session_state.verification_history.append({
+            "Timestamp": datetime.now().strftime("%H:%M:%S"),
+            "Claim": user_claim[:80] + "..." if len(user_claim) > 80 else user_claim,
+            "Verdict": verdict,
+            "Truth Index (%)": composite_truth_index,
+            "Web Corroboration (%)": corroboration_score,
+            "Sensationalism Score": ling_metrics['sensationalism_score'],
+            "Sources Found": len(sources)
+        })
+
     st.markdown("---")
     
+    # Verdict Header Card
     st.markdown(f"""
     <div style="background-color: rgba(15, 23, 42, 0.85); padding: 22px; border-radius: 16px; border-left: 6px solid {verdict_color}; border-top: 1px solid rgba(255,255,255,0.08); margin-bottom: 24px;">
         <h2 style="margin: 0; color: white; font-size: 22px; display: flex; align-items: center; gap: 10px;">
@@ -539,7 +671,6 @@ if analyze_btn and user_claim.strip():
     </div>
     """, unsafe_allow_html=True)
     
-    # Command Center Metrics Grid
     m1, m2, m3, m4 = st.columns(4)
     with m1:
         st.markdown(f"""
@@ -585,23 +716,49 @@ if analyze_btn and user_claim.strip():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    tab1, tab2, tab3 = st.tabs(["🌐 Google News Live Grounding", "🧠 Linguistic Analysis", "⚙️ Technical Architecture"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🌐 Live News & Source Authority", 
+        "📲 WhatsApp Debunk Card", 
+        "🧠 Linguistic Analysis", 
+        "📜 Audit History & Export",
+        "⚙️ Technical Architecture"
+    ])
     
     with tab1:
-        st.markdown("### Live Corroboration Feed")
+        st.markdown("### Live Corroboration & Source Credibility Matrix")
         if is_debunked_online:
             st.error("🚨 **Fact-check or debunking articles disproving this claim were found in online news registries!**")
         
-        if sources:
-            st.write(f"Found **{len(sources)}** live news matches. Sentence-Level TF-IDF Cosine Similarity assesses claim alignment.")
-            for idx, src in enumerate(sources, 1):
-                with st.expander(f"{idx}. {src['title']} ({src.get('engine', 'Google News')} | Match: {src.get('similarity', 0)}%)"):
+        # Source Credibility Tier Summary Bar
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(f"**🟢 Tier 1 Outlets (High Trust):** `{tier_counts['t1']}`")
+        with c2:
+            st.markdown(f"**🟡 Tier 2 Outlets (Aggregators):** `{tier_counts['t2']}`")
+        with c3:
+            st.markdown(f"**🔴 Tier 3 Outlets (Unverified):** `{tier_counts['t3']}`")
+
+        st.markdown("---")
+        
+        if eval_sources:
+            st.write(f"Found **{len(eval_sources)}** live news matches. Sentence-Level TF-IDF Cosine Similarity assesses claim alignment:")
+            for idx, src in enumerate(eval_sources, 1):
+                with st.expander(f"{idx}. {src['title']} ({src['tier_badge']} | Match: {src.get('similarity', 0)}%)"):
+                    st.markdown(f"<span style='color:{src[\"badge_color\"]}; font-weight:bold;'>{src['tier_label']}</span>", unsafe_allow_html=True)
                     st.write(src['snippet'])
                     st.markdown(f"[🔗 Open Source Article]({src['url']})")
         else:
             st.info("No direct live news matches found on search engines. Unverified claims receive a neutral pending score.")
 
     with tab2:
+        st.markdown("### 📲 Ready-to-Share WhatsApp Debunk Card")
+        st.write("Copy and share this pre-formatted fact-check alert to debunk rumors on WhatsApp, Telegram, or Twitter:")
+        
+        st.markdown(f'<div class="whatsapp-card-box">{html.escape(whatsapp_card_text)}</div>', unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.code(whatsapp_card_text, language="markdown")
+
+    with tab3:
         st.markdown("### Linguistic & Clickbait Indicators")
         st.write(f"- **ALL-CAPS Word Ratio:** {ling_metrics['caps_ratio']}%")
         st.write(f"- **Exclamation Marks Count:** {ling_metrics['exclamations']}")
@@ -612,13 +769,50 @@ if analyze_btn and user_claim.strip():
         else:
             st.success("✅ No sensational clickbait trigger phrases detected.")
 
-    with tab3:
+    with tab4:
+        st.markdown("### 📜 Session Verification Audit History")
+        st.write("Track all news checks conducted during this active session:")
+        
+        if st.session_state.verification_history:
+            history_df = pd.DataFrame(st.session_state.verification_history)
+            st.dataframe(history_df, use_container_width=True)
+            
+            # Download CSV Export Button
+            csv_data = history_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Session Audit History (CSV)",
+                data=csv_data,
+                file_name=f"verifact_audit_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                type="primary"
+            )
+        else:
+            st.info("No claims verified yet in this session.")
+
+    with tab5:
         st.markdown("""
         ### VeriFact AI Engine Specifications
         1. **Google News RSS Grounding**: Searches Google News XML RSS streams without facing rate limits or API key restrictions.
         2. **Multi-Tier Search Query Generator**: Generates targeted query variations (Named Entities, Content Keywords) to locate live coverage.
         3. **Sentence-Level TF-IDF Vector Math**: Measures vector similarity between claim sentences and live web snippets to eliminate vector length dilution on full-length articles.
+        4. **Source Credibility Evaluation**: Categorizes news publishers into Tier 1 (PIB, Reuters, BBC, The Hindu), Tier 2, and Tier 3 sources.
+        5. **WhatsApp Debunk Card**: Converts fact-check outputs into copyable social messaging cards.
         """)
 
 elif analyze_btn:
     st.warning("Please enter a claim or headline to analyze.")
+
+# Render Verification History in Tab when not analyzing
+elif not analyze_btn and st.session_state.verification_history:
+    st.markdown("---")
+    st.markdown("### 📜 Session Verification Audit Log")
+    history_df = pd.DataFrame(st.session_state.verification_history)
+    st.dataframe(history_df, use_container_width=True)
+    
+    csv_data = history_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download Session Audit History (CSV)",
+        data=csv_data,
+        file_name=f"verifact_audit_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
