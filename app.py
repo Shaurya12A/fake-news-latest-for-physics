@@ -8,9 +8,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.linear_model import LogisticRegression
 from duckduckgo_search import DDGS
 
-# Streamlit Page Setup
 st.set_page_config(
-    page_title="Fake News Detector (Pure NLP & Web Corroboration)",
+    page_title="Algorithmic Fake News Detector & Fact-Checker",
     page_icon="🛡️",
     layout="wide"
 )
@@ -18,7 +17,7 @@ st.set_page_config(
 st.title("🛡️ Algorithmic Fake News Detector & Fact-Checker")
 st.markdown("""
 *100% Free, Local NLP & Web-Grounded Verification Engine — No AI API Keys Required!*  
-This tool combines **TF-IDF Machine Learning**, **Cosine Similarity Live Corroboration**, **Debunk Signal Detection**, and **Linguistic Bias Scoring**.
+Combines **Named Entity Keyword Extraction**, **Multi-Query DuckDuckGo Corroboration**, **Debunk Signal Detection**, and **Calm AI Hallucination Auditing**.
 """)
 
 @st.cache_resource
@@ -72,13 +71,28 @@ def build_local_ml_model():
 
 vectorizer, ml_model = build_local_ml_model()
 
-def extract_search_keywords(text: str) -> str:
+def extract_search_keywords(text: str) -> tuple[str, str]:
     """
-    Extracts 4 to 6 core keywords by removing common stop words, 
-    allowing DuckDuckGo to match actual news coverage.
+    Extracts core named entities (proper nouns) and high-value keywords to form 
+    both a primary precise query and a secondary broader query.
     """
+    # Find proper nouns and capitalized terms (excluding start of sentences)
+    words = text.split()
+    proper_nouns = []
+    
+    for i, w in enumerate(words):
+        clean_w = re.sub(r'[^\w]', '', w)
+        if len(clean_w) > 1 and clean_w[0].isupper():
+            # Avoid picking up start of sentence words unless they look like named entities
+            if i > 0 or clean_w in ["ISRO", "NASA", "RBI", "WHO", "BJP", "INC", "Delhi", "Mumbai", "Supreme", "Court"]:
+                proper_nouns.append(clean_w)
+                
+    # Deduplicate proper nouns while preserving order
+    unique_entities = list(dict.fromkeys(proper_nouns))
+    
+    # Remove common stop words
     clean_text = re.sub(r'[^\w\s]', '', text.lower())
-    words = clean_text.split()
+    all_words = clean_text.split()
     
     common_stopwords = set([
         "the", "a", "an", "is", "are", "was", "were", "and", "or", "but", "in", "on", "at", 
@@ -89,20 +103,24 @@ def extract_search_keywords(text: str) -> str:
         "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "s", "t", 
         "can", "will", "just", "don", "should", "now", "of", "it", "that", "this", "these", 
         "those", "they", "them", "their", "what", "which", "who", "whom", "he", "him", "his", 
-        "she", "her", "hers", "has", "have", "had", "having", "do", "does", "did", "doing"
+        "she", "her", "hers", "has", "have", "had", "having", "do", "does", "did", "doing",
+        "according", "reports", "stated", "official", "published", "breaking", "news"
     ])
     
-    keywords = [w for w in words if w not in common_stopwords and len(w) > 2]
+    content_words = [w for w in all_words if w not in common_stopwords and len(w) > 2]
     
-    if len(keywords) > 6:
-        keywords = keywords[:6]
-        
-    return " ".join(keywords) if keywords else clean_text[:60]
+    # Primary Query: Prioritize Named Entities + Top Content Words (4 to 6 words max)
+    primary_list = unique_entities[:3] + [w for w in content_words if w.capitalize() not in unique_entities][:3]
+    primary_query = " ".join(primary_list[:6]) if primary_list else " ".join(content_words[:5])
+    
+    # Secondary Query: Broader backup query using first few strong content words
+    secondary_query = " ".join(content_words[:5])
+    
+    return primary_query, secondary_query
 
 def analyze_linguistic_markers(text: str):
     """
-    Calculates linguistic red flags (sensationalism, clickbait, ALL-CAPS)
-    as well as positive journalistic tone markers.
+    Calculates sensationalism, clickbait markers, and journalistic vocabulary.
     """
     words = text.split()
     total_words = max(len(words), 1)
@@ -134,14 +152,15 @@ def analyze_linguistic_markers(text: str):
         "officials", "spokesperson", "statement", "confirmed", "data", "percent", "ministry",
         "department", "university", "journal", "agency", "court", "minister", "government",
         "assembly", "saturday", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday",
-        "police", "delhi", "mumbai", "official", "stated", "president", "prime minister", "isro"
+        "police", "delhi", "mumbai", "official", "stated", "president", "prime minister", "isro",
+        "rbi", "nasa", "reuters", "express", "times", "parliament", "amendment", "bill"
     ]
     matched_journalistic = [kw for kw in journalistic_keywords if kw in text_lower]
-    journalistic_score = min(len(matched_journalistic) * 20, 100)
+    journalistic_score = min(len(matched_journalistic) * 18, 100)
 
-    # Compute overall sensationalism index (0 to 100)
+    # Sensationalism Index (0 to 100)
     sensationalism_score = int(min(
-        max((caps_ratio * 2.0) + (sensational_punct * 15) + (trigger_score * 0.6) - (journalistic_score * 0.3), 0),
+        max((caps_ratio * 2.0) + (sensational_punct * 15) + (trigger_score * 0.6) - (journalistic_score * 0.2), 0),
         100
     ))
     
@@ -155,26 +174,30 @@ def analyze_linguistic_markers(text: str):
 
 def fetch_and_corroborate_live_sources(claim: str):
     """
-    Searches DuckDuckGo directly for matching news coverage, computes
-    normalized TF-IDF Cosine Similarity, and scans snippet titles/bodies for specific debunking phrases.
+    Executes a multi-query DuckDuckGo search using extracted entities/keywords.
+    Computes TF-IDF Cosine Similarity and checks for debunking phrases in live snippets.
     """
     sources = []
     debunk_matches_count = 0
     
-    # Explicit debunk phrases to check in snippet titles and content
     explicit_debunk_phrases = [
         "fact check", "fact-check", "fake news", "hoax", "false claim", 
         "myth", "debunked", "baseless", "no truth", "viral rumour", "viral rumor",
-        "misleading claim", "disproved"
+        "misleading claim", "disproved", "falsely claimed", "fake post"
     ]
+    
+    primary_q, secondary_q = extract_search_keywords(claim)
     
     try:
         ddgs = DDGS()
-        search_query = extract_search_keywords(claim)
         
-        # Query DuckDuckGo text search
-        results = list(ddgs.text(search_query, max_results=6))
+        # Primary Attempt
+        results = list(ddgs.text(primary_q, max_results=6))
         
+        # Fallback to secondary query if primary returned 0 results
+        if not results and secondary_q != primary_q:
+            results = list(ddgs.text(secondary_q, max_results=6))
+            
         if results:
             snippets = []
             for r in results:
@@ -185,7 +208,7 @@ def fetch_and_corroborate_live_sources(claim: str):
                 title_lower = title.lower()
                 body_lower = body.lower()
                 
-                # Check for explicit debunk phrases in snippet title or body
+                # Scan for explicit debunk phrases
                 for dphrase in explicit_debunk_phrases:
                     if dphrase in title_lower or dphrase in body_lower:
                         debunk_matches_count += 1
@@ -202,10 +225,10 @@ def fetch_and_corroborate_live_sources(claim: str):
             similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
             max_similarity = float(np.max(similarities)) if len(similarities) > 0 else 0.0
             
-            # Non-linear similarity normalization (maps 0.12+ to 60-100%)
+            # Non-linear similarity normalization (maps 0.12+ raw overlap to 60-100% confidence)
             normalized_match = min(int((max_similarity ** 0.45) * 100 * 1.5), 100)
             
-            # DEBUNK FLAG: Triggered if at least 2 debunking snippets or a debunk title is found
+            # DEBUNK FLAG: True if debunking phrases found in web search matches
             is_debunked_online = debunk_matches_count >= 1 and (normalized_match >= 15)
             
             if is_debunked_online:
@@ -225,14 +248,13 @@ st.sidebar.markdown("Select a sample claim to test the verification pipeline ins
 
 sample_claims = {
     "Select a benchmark...": "",
-    "🚨 Fake: 5G & Bird DNA Leak": "BREAKING URGENT: Internal leak proves 5G cell towers emit scalar frequencies that alter bird DNA, causing hundreds to fall dead!",
-    "🟢 Real: ISRO Spaceflight Mission": "Indian Space Research Organisation successfully completes core stage engine testing for the upcoming Gaganyaan human spaceflight mission.",
+    "🚨 Clickbait Fake: 5G & Bird DNA": "BREAKING URGENT: Internal leak proves 5G cell towers emit scalar frequencies that alter bird DNA, causing hundreds to fall dead!",
+    "🟢 Real News: ISRO Spaceflight Mission": "Indian Space Research Organisation successfully completes core stage engine testing for the upcoming Gaganyaan human spaceflight mission.",
     "⚠️ Debunked Rumor: RBI Plastic Currency": "The Reserve Bank of India has officially announced that all current paper currency notes will be fully replaced with plastic bank notes starting next month.",
-    "⚠️ Misleading: Miracle Health Cure": "Drinking warm lemon water with baking soda every morning completely cures diabetes and eliminates 100% of viral infections instantly!"
+    "⚠️ Calm AI Fake: Mandatory Vaccine Fasting": "The Ministry of Health has published updated clinical guidelines recommending a mandatory 48-hour liquid fast prior to receiving seasonal flu vaccinations."
 }
 
 selected_sample = st.sidebar.selectbox("Choose Sample:", list(sample_claims.keys()))
-
 default_text = sample_claims[selected_sample] if selected_sample != "Select a benchmark..." else ""
 
 user_claim = st.text_area(
@@ -248,7 +270,7 @@ with col_btn:
 
 if analyze_btn and user_claim.strip():
     
-    with st.spinner("Processing local ML classification & scraping live web corroboration..."):
+    with st.spinner("Processing local ML classification & live web corroboration..."):
         
         # Step 1: Local ML Classifier Prediction
         claim_vector = vectorizer.transform([user_claim])
@@ -264,32 +286,50 @@ if analyze_btn and user_claim.strip():
         sensational_penalty = (100 - ling_metrics["sensationalism_score"])
         journalistic_boost = ling_metrics["journalistic_score"]
 
-        if is_debunked_online:
-            # Fact check articles disproving this claim were explicitly found online
-            composite_truth_index = min(corroboration_score, 25)
-        elif corroboration_score >= 25 or (corroboration_score >= 15 and ling_metrics["sensationalism_score"] < 15):
-            # Strong or clean genuine web corroboration found
-            composite_truth_index = int(
-                (corroboration_score * 0.55) + 
-                (sensational_penalty * 0.25) + 
-                (ml_prob_real * 0.20)
-            )
-            composite_truth_index = max(composite_truth_index, 68)  # Boost authentic news match
-        else:
-            # Fallback for uncorroborated text based on style and tone
-            base_score = 65 + (journalistic_boost * 0.25) - (ling_metrics["sensationalism_score"] * 0.50)
-            composite_truth_index = int(np.clip(base_score, 15, 85))
+        # AUDITING RULE FOR CALM AI FAKE NEWS:
+        # High official jargon + 0% web corroboration = Suspicious AI Assertion
+        is_calm_ai_hallucination = (
+            corroboration_score < 15 and 
+            journalistic_boost >= 30 and 
+            ling_metrics["sensationalism_score"] < 20
+        )
 
-        # Determine Final Verdict
-        if is_debunked_online or composite_truth_index < 35 or ling_metrics["sensationalism_score"] >= 50:
+        if is_debunked_online:
+            # Explicit fact check debunking articles found online
+            composite_truth_index = min(corroboration_score, 25)
             verdict = "DEBUNKED FAKE / HOAX DETECTED"
             verdict_color = "#ef4444"
             verdict_icon = "🚨"
-        elif composite_truth_index >= 65:
+
+        elif is_calm_ai_hallucination:
+            # Formal calm tone but zero digital footprint online
+            composite_truth_index = 32
+            verdict = "PROBABLE AI HALLUCINATION / UNVERIFIED ASSERTION"
+            verdict_color = "#f59e0b"
+            verdict_icon = "🤖"
+
+        elif corroboration_score >= 20 or (corroboration_score >= 12 and ling_metrics["sensationalism_score"] < 10):
+            # Verified web corroboration found
+            composite_truth_index = int(
+                (corroboration_score * 0.60) + 
+                (sensational_penalty * 0.20) + 
+                (ml_prob_real * 0.20)
+            )
+            composite_truth_index = max(composite_truth_index, 72)
             verdict = "VERIFIED REAL / HIGHLY LIKELY"
             verdict_color = "#22c55e"
             verdict_icon = "🟢"
+
+        elif ling_metrics["sensationalism_score"] >= 45:
+            # High clickbait/sensationalism
+            composite_truth_index = max(15, 100 - ling_metrics["sensationalism_score"])
+            verdict = "DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
+            verdict_color = "#ef4444"
+            verdict_icon = "🚨"
+
         else:
+            # Standard uncorroborated claim fallback
+            composite_truth_index = 55
             verdict = "MISLEADING / PARTIALLY UNVERIFIED"
             verdict_color = "#f59e0b"
             verdict_icon = "⚠️"
@@ -326,6 +366,8 @@ if analyze_btn and user_claim.strip():
         st.markdown("### Live Web Search Matches (DuckDuckGo)")
         if is_debunked_online:
             st.error("⚠️ **Fact-check or debunking articles disproving this claim were found online!**")
+        elif is_calm_ai_hallucination:
+            st.warning("🤖 **AI Hallucination Red Flag:** Claim uses official/governmental terminology, but no matching news articles or official press releases exist online.")
         
         if sources:
             st.write(f"Found **{len(sources)}** relevant web results. Cosine similarity evaluates match confidence.")
@@ -350,10 +392,10 @@ if analyze_btn and user_claim.strip():
     with tab3:
         st.markdown("""
         ### Technical Architecture (100% API-Free)
-        1. **Smart Keyword Extraction**: Converts raw headlines and article paragraphs into concise search queries.
-        2. **DuckDuckGo Live Scraping**: Fetches current news headlines and excerpts without needing API keys.
-        3. **Normalized TF-IDF Cosine Similarity & Debunk Detection**: Quantifies similarity overlap while checking if live search snippets disprove or debunk the claim.
-        4. **Journalistic & Sensational Heuristics**: Analyzes reporting style, attribution phrases, ALL-CAPS density, and sensational clickbait trigger words.
+        1. **Smart Entity Keyword Extraction**: Prioritizes proper nouns (organizations, places, named figures) to maximize DuckDuckGo search accuracy.
+        2. **DuckDuckGo Multi-Query Scraping**: Executes primary and fallback queries without needing API keys.
+        3. **Normalized TF-IDF Cosine Similarity & Debunk Detection**: Calculates vector overlap and checks if returned snippets contain explicit fact-checking debunks.
+        4. **AI Hallucination Audit Rule**: Flags official-sounding claims that have zero digital footprint on public search engines.
         """)
 
 elif analyze_btn:
