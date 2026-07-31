@@ -17,7 +17,7 @@ st.set_page_config(
 st.title("🛡️ Algorithmic Fake News Detector & Fact-Checker")
 st.markdown("""
 *100% Free, Local NLP & Web-Grounded Verification Engine — No AI API Keys Required!*  
-This tool combines **TF-IDF Machine Learning**, **Cosine Similarity Live Corroboration**, and **Linguistic Bias Scoring**.
+This tool combines **TF-IDF Machine Learning**, **Cosine Similarity Live Corroboration**, **Debunk Signal Detection**, and **Linguistic Bias Scoring**.
 """)
 
 @st.cache_resource
@@ -42,6 +42,7 @@ def build_local_ml_model():
         ("Local university researchers publish peer reviewed study on renewable battery longevity", 1),
         ("Supreme Court delivers verdict on constitutional rights case after months of hearing", 1),
         ("Finance ministry presents annual budget allocation for education and healthcare sectors", 1),
+        ("Indian Space Research Organisation successfully completes core stage engine testing for spaceflight mission", 1),
         
         # Fake / Clickbait Samples
         ("BREAKING: Miracle kitchen spice completely cures all diseases in 24 hours scientists shocked", 0),
@@ -72,8 +73,8 @@ vectorizer, ml_model = build_local_ml_model()
 
 def extract_search_keywords(text: str) -> str:
     """
-    Strips stop words, punctuation, and extracts 5-7 core keywords from long text blocks 
-    so search engines like DuckDuckGo return accurate live news articles.
+    Strips stop words and punctuation to extract 5-7 core keywords 
+    so search engines like DuckDuckGo return relevant articles.
     """
     clean_text = re.sub(r'[^\w\s]', '', text.lower())
     words = clean_text.split()
@@ -81,13 +82,14 @@ def extract_search_keywords(text: str) -> str:
     common_stopwords = set([
         "the", "a", "an", "is", "are", "was", "were", "and", "or", "but", "in", "on", "at", 
         "to", "for", "with", "by", "about", "against", "between", "into", "through", "during", 
-        "before", "after", "above", "below", "from", "up", "down", "in", "out", "off", "over", 
+        "before", "after", "above", "below", "from", "up", "down", "out", "off", "over", 
         "under", "again", "further", "then", "once", "here", "there", "when", "where", "why", 
         "how", "all", "any", "both", "each", "few", "more", "most", "other", "some", "such", 
         "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "s", "t", 
         "can", "will", "just", "don", "should", "now", "of", "it", "that", "this", "these", 
         "those", "they", "them", "their", "what", "which", "who", "whom", "he", "him", "his", 
-        "she", "her", "hers", "has", "have", "had", "having", "do", "does", "did", "doing"
+        "she", "her", "hers", "has", "have", "had", "having", "do", "does", "did", "doing",
+        "has", "officially", "announced", "all", "current", "will", "be", "fully"
     ])
     
     keywords = [w for w in words if w not in common_stopwords and len(w) > 2]
@@ -132,7 +134,7 @@ def analyze_linguistic_markers(text: str):
         "officials", "spokesperson", "statement", "confirmed", "data", "percent", "ministry",
         "department", "university", "journal", "agency", "court", "minister", "government",
         "assembly", "saturday", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday",
-        "police", "delhi", "mumbai", "official", "stated", "president", "prime minister"
+        "police", "delhi", "mumbai", "official", "stated", "president", "prime minister", "isro"
     ]
     matched_journalistic = [kw for kw in journalistic_keywords if kw in text_lower]
     journalistic_score = min(len(matched_journalistic) * 20, 100)
@@ -153,10 +155,17 @@ def analyze_linguistic_markers(text: str):
 
 def fetch_and_corroborate_live_sources(claim: str):
     """
-    Searches DuckDuckGo directly for matching news coverage and computes
-    normalized TF-IDF Cosine Similarity between claim and live headlines.
+    Searches DuckDuckGo directly for matching news coverage, computes
+    normalized TF-IDF Cosine Similarity, and scans for debunk/fact-check keywords.
     """
     sources = []
+    debunk_matches_count = 0
+    
+    debunk_keywords = [
+        "fact check", "fact-check", "fake", "hoax", "false", "myth", 
+        "denies", "rumour", "rumor", "baseless", "clarifies", 
+        "misleading", "debunk", "untrue", "fake news", "no truth", "viral claim"
+    ]
     
     try:
         ddgs = DDGS()
@@ -171,8 +180,15 @@ def fetch_and_corroborate_live_sources(claim: str):
                 title = r.get('title', 'Web Result')
                 body = r.get('body', '')
                 url = r.get('href', '#')
-                snippet_text = f"{title}. {body}"
-                snippets.append(snippet_text)
+                snippet_text = f"{title}. {body}".lower()
+                
+                # Check for debunking signals in search snippets
+                for dkw in debunk_keywords:
+                    if dkw in snippet_text:
+                        debunk_matches_count += 1
+                        break
+                        
+                snippets.append(f"{title}. {body}")
                 sources.append({"title": title, "url": url, "snippet": body})
             
             # Compute TF-IDF Cosine Similarity
@@ -183,17 +199,23 @@ def fetch_and_corroborate_live_sources(claim: str):
             similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
             max_similarity = float(np.max(similarities)) if len(similarities) > 0 else 0.0
             
-            # Non-linear normalization: TF-IDF cosine similarity > 0.12 is strong for short vs long texts
+            # Base normalized match
             normalized_match = min(int((max_similarity ** 0.5) * 100 * 1.6), 100)
+            
+            # DEBUNK PENALTY:
+            # If search results contain fact-check/debunking terms, the claim is a known rumor being disproved online!
+            is_debunked_online = debunk_matches_count >= 1
+            if is_debunked_online:
+                normalized_match = max(0, normalized_match - (debunk_matches_count * 30))
             
             for i, src in enumerate(sources):
                 src['similarity'] = round(float(similarities[i]) * 100, 1)
                 
-            return sources, max_similarity, normalized_match
-    except Exception as e:
+            return sources, max_similarity, normalized_match, is_debunked_online
+    except Exception:
         pass
         
-    return [], 0.0, 0
+    return [], 0.0, 0, False
 
 st.sidebar.header("📋 Benchmark Examples")
 st.sidebar.markdown("Select a sample claim to test the verification pipeline instantly:")
@@ -201,9 +223,9 @@ st.sidebar.markdown("Select a sample claim to test the verification pipeline ins
 sample_claims = {
     "Select a benchmark...": "",
     "🚨 Fake: 5G & Bird DNA Leak": "BREAKING URGENT: Internal leak proves 5G cell towers emit scalar frequencies that alter bird DNA, causing hundreds to fall dead!",
-    "🟢 Real: NASA Webb Discovery": "NASA's James Webb Telescope has detected water vapor and atmospheric signatures on a rocky exoplanet orbiting in a star's habitable zone.",
-    "⚠️ Misleading: Miracle Health Cure": "Drinking warm lemon water with baking soda every morning completely cures diabetes and eliminates 100% of viral infections instantly!",
-    "🎭 Satire: Plant Conversation Record": "Local man sets national record for longest continuous conversation with a household snake plant."
+    "🟢 Real: ISRO Spaceflight Mission": "Indian Space Research Organisation successfully completes core stage engine testing for the upcoming Gaganyaan human spaceflight mission.",
+    "⚠️ Debunked Rumor: RBI Plastic Currency": "The Reserve Bank of India has officially announced that all current paper currency notes will be fully replaced with plastic bank notes starting next month.",
+    "⚠️ Misleading: Miracle Health Cure": "Drinking warm lemon water with baking soda every morning completely cures diabetes and eliminates 100% of viral infections instantly!"
 }
 
 selected_sample = st.sidebar.selectbox("Choose Sample:", list(sample_claims.keys()))
@@ -232,15 +254,18 @@ if analyze_btn and user_claim.strip():
         # Step 2: Linguistic & Sensationalism Analysis
         ling_metrics = analyze_linguistic_markers(user_claim)
         
-        # Step 3: Live Web Corroboration & Cosine Similarity
-        sources, raw_max_sim, corroboration_score = fetch_and_corroborate_live_sources(user_claim)
+        # Step 3: Live Web Corroboration & Debunk Detection
+        sources, raw_max_sim, corroboration_score, is_debunked_online = fetch_and_corroborate_live_sources(user_claim)
         
         # Step 4: Robust Composite Truth Index Calculation
         sensational_penalty = (100 - ling_metrics["sensationalism_score"])
         journalistic_boost = ling_metrics["journalistic_score"]
 
-        if len(sources) > 0 and corroboration_score > 25:
-            # Strong web corroboration found
+        if is_debunked_online:
+            # Fact check articles were found online disproving this claim
+            composite_truth_index = min(corroboration_score, 30)
+        elif len(sources) > 0 and corroboration_score > 25:
+            # Strong genuine web corroboration found
             composite_truth_index = int(
                 (corroboration_score * 0.60) + 
                 (sensational_penalty * 0.25) + 
@@ -252,18 +277,18 @@ if analyze_btn and user_claim.strip():
             composite_truth_index = int(np.clip(base_score, 15, 85))
 
         # Determine Final Verdict
-        if composite_truth_index >= 65 or (corroboration_score >= 40 and ling_metrics["sensationalism_score"] <= 20):
+        if is_debunked_online or composite_truth_index < 35:
+            verdict = "DEBUNKED FAKE / HOAX DETECTED"
+            verdict_color = "#ef4444"
+            verdict_icon = "🚨"
+        elif composite_truth_index >= 65 and corroboration_score >= 30:
             verdict = "VERIFIED REAL / HIGHLY LIKELY"
             verdict_color = "#22c55e"
             verdict_icon = "🟢"
-        elif composite_truth_index >= 45:
+        else:
             verdict = "MISLEADING / PARTIALLY UNVERIFIED"
             verdict_color = "#f59e0b"
             verdict_icon = "⚠️"
-        else:
-            verdict = "DEBUNKED FAKE / HIGH SENSATIONALISM"
-            verdict_color = "#ef4444"
-            verdict_icon = "🚨"
 
     st.markdown("---")
     st.subheader("📋 Verification Dashboard")
@@ -295,6 +320,9 @@ if analyze_btn and user_claim.strip():
     
     with tab1:
         st.markdown("### Live Web Search Matches (DuckDuckGo)")
+        if is_debunked_online:
+            st.error("⚠️ **Fact-Check/Debunking signals found in online news coverage for this claim!**")
+        
         if sources:
             st.write(f"Found **{len(sources)}** relevant web results. Cosine similarity evaluates match confidence.")
             for idx, src in enumerate(sources, 1):
@@ -320,7 +348,7 @@ if analyze_btn and user_claim.strip():
         ### Technical Architecture (100% API-Free)
         1. **Smart Keyword Extraction**: Converts raw headlines and article paragraphs into concise search queries.
         2. **DuckDuckGo Live Scraping**: Fetches current news headlines and excerpts without needing API keys.
-        3. **Normalized TF-IDF Cosine Similarity**: Transforms text into mathematical vector spaces to quantify overlap with live news sources.
+        3. **Normalized TF-IDF Cosine Similarity & Debunk Detection**: Quantifies similarity overlap while checking if live search snippets disproves or debunks the claim.
         4. **Journalistic & Sensational Heuristics**: Analyzes reporting style, attribution phrases, ALL-CAPS density, and sensational clickbait trigger words.
         """)
 
