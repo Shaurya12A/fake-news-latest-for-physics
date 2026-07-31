@@ -16,8 +16,8 @@ st.set_page_config(
 
 st.title("🛡️ Algorithmic Fake News Detector & Fact-Checker")
 st.markdown("""
-*100% Free, Local NLP & Web-Grounded Verification Engine — No AI API Keys Required!*
-This tool combines **TF-IDF Machine Learning**, **Cosine Similarity Corroboration**, and **Linguistic Bias Scoring**.
+*100% Free, Local NLP & Web-Grounded Verification Engine — No AI API Keys Required!*  
+This tool combines **TF-IDF Machine Learning**, **Cosine Similarity Live Corroboration**, and **Linguistic Bias Scoring**.
 """)
 
 @st.cache_resource
@@ -40,6 +40,8 @@ def build_local_ml_model():
         ("Government officials announce new national highway construction project starting next fiscal year", 1),
         ("Electric vehicle sales saw a significant growth rate according to annual industry report", 1),
         ("Local university researchers publish peer reviewed study on renewable battery longevity", 1),
+        ("Supreme Court delivers verdict on constitutional rights case after months of hearing", 1),
+        ("Finance ministry presents annual budget allocation for education and healthcare sectors", 1),
         
         # Fake / Clickbait Samples
         ("BREAKING: Miracle kitchen spice completely cures all diseases in 24 hours scientists shocked", 0),
@@ -52,6 +54,7 @@ def build_local_ml_model():
         ("Ancient lost scroll proves magic elixir reverses aging in three days", 0),
         ("BANNED VIDEO: What they don't want you to know about energy drinks and DNA modification", 0),
         ("URGENT: Microchips secretly implanted in tap water supply nationwide", 0),
+        ("Miracle water trick guarantees instant weight loss without diet or exercise", 0),
     ]
 
     df = pd.DataFrame(training_data, columns=['text', 'label'])
@@ -67,6 +70,33 @@ def build_local_ml_model():
 
 vectorizer, ml_model = build_local_ml_model()
 
+def extract_search_keywords(text: str) -> str:
+    """
+    Strips stop words, punctuation, and extracts 5-7 core keywords from long text blocks 
+    so search engines like DuckDuckGo return accurate live news articles.
+    """
+    clean_text = re.sub(r'[^\w\s]', '', text.lower())
+    words = clean_text.split()
+    
+    common_stopwords = set([
+        "the", "a", "an", "is", "are", "was", "were", "and", "or", "but", "in", "on", "at", 
+        "to", "for", "with", "by", "about", "against", "between", "into", "through", "during", 
+        "before", "after", "above", "below", "from", "up", "down", "in", "out", "off", "over", 
+        "under", "again", "further", "then", "once", "here", "there", "when", "where", "why", 
+        "how", "all", "any", "both", "each", "few", "more", "most", "other", "some", "such", 
+        "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "s", "t", 
+        "can", "will", "just", "don", "should", "now", "of", "it", "that", "this", "these", 
+        "those", "they", "them", "their", "what", "which", "who", "whom", "he", "him", "his", 
+        "she", "her", "hers", "has", "have", "had", "having", "do", "does", "did", "doing"
+    ])
+    
+    keywords = [w for w in words if w not in common_stopwords and len(w) > 2]
+    
+    if len(keywords) > 6:
+        keywords = keywords[:6]
+        
+    return " ".join(keywords) if keywords else clean_text[:60]
+
 def analyze_linguistic_markers(text: str):
     """
     Calculates linguistic red flags (sensationalism, clickbait, ALL-CAPS)
@@ -75,16 +105,16 @@ def analyze_linguistic_markers(text: str):
     words = text.split()
     total_words = max(len(words), 1)
     
-    # 1. Capitalization ratio
+    # Capitalization ratio
     upper_words = sum(1 for w in words if w.isupper() and len(w) > 1)
     caps_ratio = (upper_words / total_words) * 100
     
-    # 2. Punctuation density (!!!, ???)
+    # Punctuation density (!!!, ???)
     exclamations = text.count("!")
     questions = text.count("?")
     sensational_punct = exclamations + (questions * 0.5)
     
-    # 3. Clickbait & sensational trigger words
+    # Clickbait & sensational trigger words
     clickbait_keywords = [
         "shocking", "miracle", "secret", "banned", "cure", "urgent", "leak",
         "they don't want you to know", "doctors hate", "forward this", "unbelievable",
@@ -96,11 +126,13 @@ def analyze_linguistic_markers(text: str):
     matched_triggers = [kw for kw in clickbait_keywords if kw in text_lower]
     trigger_score = min(len(matched_triggers) * 25, 100)
     
-    # 4. Positive Journalistic Tone Markers
+    # Positive Journalistic Tone Markers
     journalistic_keywords = [
         "according to", "reported", "announced", "published", "study", "researchers",
         "officials", "spokesperson", "statement", "confirmed", "data", "percent", "ministry",
-        "department", "university", "journal", "agency"
+        "department", "university", "journal", "agency", "court", "minister", "government",
+        "assembly", "saturday", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday",
+        "police", "delhi", "mumbai", "official", "stated", "president", "prime minister"
     ]
     matched_journalistic = [kw for kw in journalistic_keywords if kw in text_lower]
     journalistic_score = min(len(matched_journalistic) * 20, 100)
@@ -128,10 +160,10 @@ def fetch_and_corroborate_live_sources(claim: str):
     
     try:
         ddgs = DDGS()
-        clean_query = re.sub(r'[^\w\s]', '', claim).strip()[:100]
+        search_query = extract_search_keywords(claim)
         
-        # Direct query for broader news coverage
-        results = list(ddgs.text(clean_query, max_results=6))
+        # Query DuckDuckGo text search
+        results = list(ddgs.text(search_query, max_results=6))
         
         if results:
             snippets = []
@@ -150,11 +182,9 @@ def fetch_and_corroborate_live_sources(claim: str):
             
             similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
             max_similarity = float(np.max(similarities)) if len(similarities) > 0 else 0.0
-            avg_similarity = float(np.mean(similarities)) if len(similarities) > 0 else 0.0
             
-            # Non-linear normalization: TF-IDF cosine similarity > 0.15 is strong for short vs long texts
-            # Scale max_similarity so 0.20 similarity yields ~75% match, 0.35+ yields ~95%
-            normalized_match = min(int((max_similarity ** 0.6) * 100 * 1.8), 100)
+            # Non-linear normalization: TF-IDF cosine similarity > 0.12 is strong for short vs long texts
+            normalized_match = min(int((max_similarity ** 0.5) * 100 * 1.6), 100)
             
             for i, src in enumerate(sources):
                 src['similarity'] = round(float(similarities[i]) * 100, 1)
@@ -184,7 +214,7 @@ user_claim = st.text_area(
     "Enter a news headline, article paragraph, or claim to evaluate:",
     value=default_text,
     height=120,
-    placeholder="e.g., NASA confirmed a new asteroid will pass Earth safely this weekend..."
+    placeholder="e.g., Paste headline or excerpt from Indian Express, BBC, or Reuters..."
 )
 
 col_btn, col_info = st.columns([1, 4])
@@ -207,22 +237,22 @@ if analyze_btn and user_claim.strip():
         
         # Step 4: Robust Composite Truth Index Calculation
         sensational_penalty = (100 - ling_metrics["sensationalism_score"])
-        journalistic_boost = ling_metrics["journalistic_score"] * 0.15
+        journalistic_boost = ling_metrics["journalistic_score"]
 
-        if len(sources) > 0 and corroboration_score > 30:
+        if len(sources) > 0 and corroboration_score > 25:
             # Strong web corroboration found
             composite_truth_index = int(
-                (corroboration_score * 0.55) + 
-                (sensational_penalty * 0.30) + 
+                (corroboration_score * 0.60) + 
+                (sensational_penalty * 0.25) + 
                 (ml_prob_real * 0.15)
             )
         else:
-            # Fallback for novel/unmatched news based on tone and sensationalism
-            base_score = 60 + journalistic_boost - (ling_metrics["sensationalism_score"] * 0.45)
+            # Fallback for uncorroborated text based on style and tone
+            base_score = 65 + (journalistic_boost * 0.25) - (ling_metrics["sensationalism_score"] * 0.50)
             composite_truth_index = int(np.clip(base_score, 15, 85))
 
         # Determine Final Verdict
-        if composite_truth_index >= 68:
+        if composite_truth_index >= 65 or (corroboration_score >= 40 and ling_metrics["sensationalism_score"] <= 20):
             verdict = "VERIFIED REAL / HIGHLY LIKELY"
             verdict_color = "#22c55e"
             verdict_icon = "🟢"
@@ -288,10 +318,10 @@ if analyze_btn and user_claim.strip():
     with tab3:
         st.markdown("""
         ### Technical Architecture (100% API-Free)
-        1. **Live DuckDuckGo Search**: Scrapes headlines matching your claim directly without API keys.
-        2. **Normalized TF-IDF Cosine Similarity**: Converts the claim and search snippets into vector space and applies non-linear scaling to evaluate real-world text matches accurately.
-        3. **Journalistic & Sensational Heuristics**: Evaluates reporting style, attributions, ALL-CAPS ratios, and clickbait words.
-        4. **Composite Truth Index**: Combines live corroboration, ML classification, and tone analysis into a balanced verdict.
+        1. **Smart Keyword Extraction**: Converts raw headlines and article paragraphs into concise search queries.
+        2. **DuckDuckGo Live Scraping**: Fetches current news headlines and excerpts without needing API keys.
+        3. **Normalized TF-IDF Cosine Similarity**: Transforms text into mathematical vector spaces to quantify overlap with live news sources.
+        4. **Journalistic & Sensational Heuristics**: Analyzes reporting style, attribution phrases, ALL-CAPS density, and sensational clickbait trigger words.
         """)
 
 elif analyze_btn:
