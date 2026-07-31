@@ -273,4 +273,3 @@ if analyze_btn and user_claim.strip():
 
 elif analyze_btn:
     st.warning("Please enter a claim or headline to analyze.")
-```
