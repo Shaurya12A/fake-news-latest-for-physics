@@ -187,7 +187,6 @@ def google_news_rss_search(query: str):
     results = []
     try:
         encoded_q = urllib.parse.quote(query)
-        # Google News RSS endpoint configured for English / India & Global news
         url = f"https://news.google.com/rss/search?q={encoded_q}&hl=en-IN&gl=IN&ceid=IN:en"
         
         req = urllib.request.Request(
@@ -223,7 +222,7 @@ def google_news_rss_search(query: str):
 
 def fallback_duckduckgo_search(query: str):
     """
-    Secondary fallback search using DuckDuckGo library & direct HTML.
+    Secondary fallback search using DuckDuckGo.
     """
     results = []
     try:
@@ -250,7 +249,7 @@ def fallback_duckduckgo_search(query: str):
 def fetch_and_corroborate_live_sources(claim: str):
     """
     Queries Google News RSS and DuckDuckGo for live coverage.
-    Computes Cosine Similarity and checks for debunking flags in live news snippets.
+    Computes TF-IDF Cosine Similarity and checks for debunking flags in live news snippets.
     """
     sources = []
     debunk_matches_count = 0
@@ -271,7 +270,7 @@ def fetch_and_corroborate_live_sources(claim: str):
             raw_results.extend(res_gnews)
             break
             
-    # Layer 2: DuckDuckGo Fallback Search if Google News returns empty
+    # Layer 2: DuckDuckGo Fallback Search
     if not raw_results:
         for q in search_queries:
             res_ddg = fallback_duckduckgo_search(q)
@@ -318,12 +317,14 @@ def fetch_and_corroborate_live_sources(claim: str):
             similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
             max_similarity = float(np.max(similarities)) if len(similarities) > 0 else 0.0
             
-            # Normalization mapping: TF-IDF similarity to longer snippets maps cleanly to 0-100 score
-            normalized_match = min(int((max_similarity ** 0.30) * 100 * 1.4), 100)
-            if max_similarity > 0.05 and normalized_match < 55:
-                normalized_match = 70
+            # Calibrated mapping without artificial inflation:
+            if max_similarity >= 0.18:
+                normalized_match = min(int(max_similarity * 180), 100)
+            elif max_similarity >= 0.10:
+                normalized_match = int(max_similarity * 140)
+            else:
+                normalized_match = int(max_similarity * 100)
                 
-            # Debunk flag assessment
             is_debunked_online = debunk_matches_count >= 1
             
             if is_debunked_online:
@@ -342,9 +343,9 @@ st.sidebar.markdown("Select a sample claim to test live Google News verification
 
 sample_claims = {
     "Select a benchmark...": "",
-    "🟢 Real News: Lok Sabha Public Examination Bill": "Lok Sabha approved the Public Examination Prevention of Unfair Means Amendment Bill with stricter punishment of up to 10 years imprisonment.",
-    "🟢 Real News: ISRO Gaganyaan Mission": "Indian Space Research Organisation successfully completes core stage engine testing for the upcoming Gaganyaan human spaceflight mission.",
-    "🚨 Clickbait Fake: 5G & Bird DNA": "BREAKING URGENT: Internal leak proves 5G cell towers emit scalar frequencies that alter bird DNA, causing hundreds to fall dead!",
+    "🟢 Real News: Lok Sabha Public Examination Bill": "Lok Sabha approved the Public Examination Prevention of Unfair Means Amendment Bill with strict penalties for paper leaks.",
+    "🟢 Real News: ISRO Gaganyaan Mission": "Indian Space Research Organisation successfully completed core stage engine testing for the Gaganyaan human spaceflight mission.",
+    "🚨 Clickbait Fake: 5G & Bird DNA": "BREAKING URGENT: Secret government plot leaked as 5G cell towers emit scalar frequencies that alter human DNA overnight!",
     "⚠️ Debunked Rumor: RBI Plastic Currency": "The Reserve Bank of India has officially announced that all current paper currency notes will be fully replaced with plastic bank notes starting next month."
 }
 
@@ -376,38 +377,44 @@ if analyze_btn and user_claim.strip():
         # Step 3: Google News Grounding & Live Corroboration
         sources, raw_max_sim, corroboration_score, is_debunked_online = fetch_and_corroborate_live_sources(user_claim)
         
-        # Step 4: Final Classification Decision Rules
+        # Step 4: Decision Rules Engine
         sensational_penalty = (100 - ling_metrics["sensationalism_score"])
 
         if is_debunked_online:
-            # Fact check / debunking articles explicitly disproving claim found on Google News
             composite_truth_index = 10
             verdict = "DEBUNKED FAKE / HOAX DETECTED"
             verdict_color = "#ef4444"
             verdict_icon = "🚨"
 
-        elif corroboration_score >= 20:
-            # Verified live Google News coverage found
-            composite_truth_index = int(
-                (corroboration_score * 0.70) + 
-                (sensational_penalty * 0.15) + 
-                (ml_prob_real * 0.15)
-            )
-            composite_truth_index = max(composite_truth_index, 78)
-            verdict = "VERIFIED REAL / HIGHLY LIKELY"
-            verdict_color = "#22c55e"
-            verdict_icon = "🟢"
-
-        elif ling_metrics["sensationalism_score"] >= 40:
-            # Clickbait or sensational triggering text with 0 web matches
-            composite_truth_index = max(15, 100 - ling_metrics["sensationalism_score"])
+        elif ling_metrics["sensationalism_score"] >= 40 and corroboration_score < 60:
+            # High sensationalism without strong direct news corroboration
+            composite_truth_index = max(10, 100 - ling_metrics["sensationalism_score"] - 15)
             verdict = "DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
             verdict_color = "#ef4444"
             verdict_icon = "🚨"
 
+        elif corroboration_score >= 45 and raw_max_sim >= 0.18:
+            # Verified live Google News coverage found
+            composite_truth_index = int(
+                (corroboration_score * 0.75) + 
+                (sensational_penalty * 0.15) + 
+                (ml_prob_real * 0.10)
+            )
+            composite_truth_index = max(composite_truth_index, 75)
+            verdict = "VERIFIED REAL / HIGHLY LIKELY"
+            verdict_color = "#22c55e"
+            verdict_icon = "🟢"
+
+        elif ling_metrics["journalistic_score"] >= 20 and corroboration_score < 35:
+            # Calm AI Fake (Formal wording, but zero/weak real news corroboration)
+            composite_truth_index = 30
+            verdict = "UNVERIFIED / PROBABLE FAKE NEWS"
+            verdict_color = "#f59e0b"
+            verdict_icon = "⚠️"
+
         else:
-            # Uncorroborated / No web matches found
-            composite_truth_index = 50
+            # Uncorroborated / Pending rating
+            composite_truth_index = 45
             verdict = "UNVERIFIED / PENDING CORROBORATION"
             verdict_color = "#f59e0b"
             verdict_icon = "⚠️"
