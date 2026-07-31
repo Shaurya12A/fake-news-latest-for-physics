@@ -40,7 +40,7 @@ except Exception as e:
     st.stop()
 
 def fetch_live_search_results(query: str):
-    """Searches DuckDuckGo for top live news/web results without using Gemini Search Quota."""
+    """Searches DuckDuckGo for top live news/web results."""
     search_context = []
     sources = []
     try:
@@ -56,6 +56,24 @@ def fetch_live_search_results(query: str):
         search_context.append("Web search temporarily unavailable.")
     return "\n\n".join(search_context), sources
 
+def call_gemini_with_fallback(client_obj, prompt_text):
+    """Attempts generation across active models to prevent 404 deprecation errors."""
+    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]
+    
+    last_error = None
+    for model_name in candidate_models:
+        try:
+            response = client_obj.models.generate_content(
+                model=model_name,
+                contents=prompt_text
+            )
+            return response.text, model_name
+        except Exception as e:
+            last_error = e
+            continue
+            
+    raise last_error
+
 # Input Section
 user_claim = st.text_area(
     "Enter a headline, article excerpt, or claim to fact-check:",
@@ -68,12 +86,12 @@ with col1:
     analyze_btn = st.button("🔎 Fact-Check Claim", type="primary")
 
 if analyze_btn and user_claim.strip():
-    with st.spinner("Searching the live web for context..."):
-        # Step 1: Fetch live web search snippets via DuckDuckGo
+    with st.spinner("Searching live web sources for context..."):
+        # Step 1: Fetch live web search snippets
         search_text, sources = fetch_live_search_results(user_claim)
 
-    with st.spinner("Analyzing facts and evaluating authenticity..."):
-        # Step 2: Feed user claim + real-time search context to Gemini
+    with st.spinner("Analyzing facts with AI..."):
+        # Step 2: Pass claim + real-time search context to Gemini
         prompt = f"""
         You are an expert investigative fact-checker.
         Evaluate the authenticity of the following claim using the provided live search results.
@@ -93,15 +111,12 @@ if analyze_btn and user_claim.strip():
         """
 
         try:
-            # Simple text call - no heavy tool search limits!
-            response = client.models.generate_content(
-                model="gemini-1.5-flash",
-                contents=prompt
-            )
+            analysis_text, used_model = call_gemini_with_fallback(client, prompt)
 
             st.markdown("---")
             st.subheader("📋 Fact-Check Results")
-            st.markdown(response.text)
+            st.caption(f"Powered by model: `{used_model}`")
+            st.markdown(analysis_text)
 
             # Display Sources
             if sources:
