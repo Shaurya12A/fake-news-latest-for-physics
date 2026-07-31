@@ -3,6 +3,7 @@ import math
 import html
 import urllib.request
 import urllib.parse
+import xml.etree.ElementTree as ET
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -19,14 +20,14 @@ st.set_page_config(
 
 st.title("🛡️ Algorithmic Fake News Detector & Fact-Checker")
 st.markdown("""
-*100% Free, Local NLP & Web-Grounded Verification Engine — No AI API Keys Required!*  
-Combines **Multi-Query Web Corroboration**, **Dual-Layer Search Fallbacks**, **Debunk Signal Detection**, and **Linguistic Analysis**.
+*100% Free, Google News RSS Grounded Verification Engine — No AI API Keys Required!*  
+Combines **Google News Live Search Corroboration**, **Multi-Tier Search Queries**, **Fact-Check Debunk Detection**, and **Linguistic Analysis**.
 """)
 
 @st.cache_resource
 def build_local_ml_model():
     """
-    Builds and trains a local TF-IDF + Logistic Regression model on benchmark news data.
+    Builds and trains a local TF-IDF + Logistic Regression classifier benchmark.
     """
     training_data = [
         # Real News Samples
@@ -77,8 +78,7 @@ vectorizer, ml_model = build_local_ml_model()
 
 def extract_search_queries(text: str) -> list[str]:
     """
-    Generates 3 tiers of search queries (Entities, Headline Excerpt, and Core Keywords)
-    to ensure web search engines successfully match live news articles.
+    Generates multi-tier targeted search queries from claim text.
     """
     words = text.split()
     proper_nouns = []
@@ -103,24 +103,24 @@ def extract_search_queries(text: str) -> list[str]:
         "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "can", "will", 
         "just", "should", "now", "of", "it", "that", "this", "these", "those", "they", "them", 
         "their", "what", "which", "who", "whom", "he", "him", "his", "she", "her", "has", "have", 
-        "had", "having", "do", "does", "did", "according", "reports", "stated", "official", "published"
+        "had", "having", "do", "does", "did", "according", "reports", "stated", "official", "published", "approved"
     ])
     
     content_words = [w for w in all_words if w not in stopwords and len(w) > 2]
     
     queries = []
     
-    # Tier 1: Entities + Top Content Term (Max 4 words)
+    # Tier 1: Entities (e.g. Lok Sabha Public Examination)
     if unique_entities:
-        q1 = " ".join(unique_entities[:3])
+        q1 = " ".join(unique_entities[:4])
         queries.append(q1)
         
-    # Tier 2: First 5 main content words
+    # Tier 2: Top 5 main content words
     if len(content_words) >= 3:
         q2 = " ".join(content_words[:5])
         queries.append(q2)
         
-    # Tier 3: Core 3 content words (Broader query)
+    # Tier 3: Core 3 content words
     if len(content_words) >= 2:
         q3 = " ".join(content_words[:3])
         queries.append(q3)
@@ -138,12 +138,12 @@ def analyze_linguistic_markers(text: str):
     upper_words = sum(1 for w in words if w.isupper() and len(w) > 1)
     caps_ratio = (upper_words / total_words) * 100
     
-    # Punctuation density (!!!, ???)
+    # Punctuation density
     exclamations = text.count("!")
     questions = text.count("?")
     sensational_punct = exclamations + (questions * 0.5)
     
-    # Clickbait & sensational trigger words
+    # Clickbait & sensational triggers
     clickbait_keywords = [
         "shocking", "miracle", "secret", "banned", "cure", "urgent", "leak",
         "they don't want you to know", "doctors hate", "forward this", "unbelievable",
@@ -180,43 +180,77 @@ def analyze_linguistic_markers(text: str):
         "journalistic_score": journalistic_score
     }
 
-def direct_duckduckgo_html_scrape(query: str):
+def google_news_rss_search(query: str):
     """
-    Fallback HTTP scraper for DuckDuckGo HTML endpoint if the library hits rate limits or API blocks.
+    Queries Google News RSS feed directly. Unrestricted, fast, and 100% free.
     """
     results = []
     try:
-        encoded_q = urllib.parse.quote_plus(query)
-        url = f"https://html.duckduckgo.com/html/?q={encoded_q}"
+        encoded_q = urllib.parse.quote(query)
+        # Google News RSS endpoint configured for English / India & Global news
+        url = f"https://news.google.com/rss/search?q={encoded_q}&hl=en-IN&gl=IN&ceid=IN:en"
         
         req = urllib.request.Request(
             url,
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         )
         
-        with urllib.request.urlopen(req, timeout=5) as response:
-            html_content = response.read().decode('utf-8')
+        with urllib.request.urlopen(req, timeout=6) as response:
+            xml_data = response.read()
+            root = ET.fromstring(xml_data)
             
-        # Parse titles and snippets via regex
-        titles = re.findall(r'<a class="result__a"[^>]*>(.*?)</a>', html_content, re.DOTALL)
-        snippets = re.findall(r'<a class="result__snippet"[^>]*>(.*?)</a>', html_content, re.DOTALL)
-        urls = re.findall(r'<a class="result__url"[^>]*href="([^"]+)"', html_content)
+            for item in root.findall('.//item')[:6]:
+                title_elem = item.find('title')
+                link_elem = item.find('link')
+                source_elem = item.find('source')
+                pubdate_elem = item.find('pubDate')
+                
+                title = title_elem.text if title_elem is not None else ""
+                link = link_elem.text if link_elem is not None else "#"
+                source = source_elem.text if source_elem is not None else "News Source"
+                pubdate = pubdate_elem.text if pubdate_elem is not None else ""
+                
+                if title:
+                    results.append({
+                        "title": title,
+                        "url": link,
+                        "snippet": f"Publisher: {source} | Date: {pubdate}. Headline: {title}",
+                        "source_engine": "Google News RSS"
+                    })
+    except Exception:
+        pass
+    return results
+
+def fallback_duckduckgo_search(query: str):
+    """
+    Secondary fallback search using DuckDuckGo library & direct HTML.
+    """
+    results = []
+    try:
+        ddgs = DDGS()
+        res = list(ddgs.news(query, max_results=5))
+        if not res:
+            res = list(ddgs.text(query, max_results=5))
         
-        for i in range(min(len(titles), 5)):
-            clean_title = re.sub(r'<[^>]+>', '', html.unescape(titles[i])).strip()
-            clean_snippet = re.sub(r'<[^>]+>', '', html.unescape(snippets[i] if i < len(snippets) else '')).strip()
-            link = urls[i] if i < len(urls) else '#'
-            
-            if clean_title:
-                results.append({"title": clean_title, "url": link, "body": clean_snippet})
+        for r in res:
+            title = r.get('title', '')
+            url = r.get('href', r.get('url', '#'))
+            snippet = r.get('body', r.get('snippet', ''))
+            if title:
+                results.append({
+                    "title": title,
+                    "url": url,
+                    "snippet": snippet,
+                    "source_engine": "DuckDuckGo Engine"
+                })
     except Exception:
         pass
     return results
 
 def fetch_and_corroborate_live_sources(claim: str):
     """
-    Executes a multi-query search with dual-layer fallback (DDGS Library -> HTML Direct Scraper).
-    Computes Cosine Similarity and checks for debunking flags in live snippets.
+    Queries Google News RSS and DuckDuckGo for live coverage.
+    Computes Cosine Similarity and checks for debunking flags in live news snippets.
     """
     sources = []
     debunk_matches_count = 0
@@ -225,35 +259,24 @@ def fetch_and_corroborate_live_sources(claim: str):
     explicit_debunk_phrases = [
         "fact check", "fact-check", "fake news", "hoax", "false claim", 
         "myth", "debunked", "baseless", "no truth", "viral rumour", "viral rumor",
-        "misleading claim", "disproved", "falsely claimed", "fake post"
+        "misleading claim", "disproved", "falsely claimed", "fake post", "pib fact check"
     ]
     
     search_queries = extract_search_queries(claim)
     
-    # Layer 1: DDGS Python Library Search
-    try:
-        ddgs = DDGS()
-        for q in search_queries:
-            # Try text search
-            res = list(ddgs.text(q, max_results=5))
-            if res:
-                raw_results.extend(res)
-                break
-                
-            # Try news search
-            res_news = list(ddgs.news(q, max_results=5))
-            if res_news:
-                raw_results.extend(res_news)
-                break
-    except Exception:
-        pass
-        
-    # Layer 2: Fallback Scraper if Layer 1 returned 0 results
+    # Layer 1: Google News RSS Search
+    for q in search_queries:
+        res_gnews = google_news_rss_search(q)
+        if res_gnews:
+            raw_results.extend(res_gnews)
+            break
+            
+    # Layer 2: DuckDuckGo Fallback Search if Google News returns empty
     if not raw_results:
         for q in search_queries:
-            res_html = direct_duckduckgo_html_scrape(q)
-            if res_html:
-                raw_results.extend(res_html)
+            res_ddg = fallback_duckduckgo_search(q)
+            if res_ddg:
+                raw_results.extend(res_ddg)
                 break
                 
     if raw_results:
@@ -262,24 +285,26 @@ def fetch_and_corroborate_live_sources(claim: str):
         
         for r in raw_results:
             title = r.get('title', 'Web Result')
-            body = r.get('body', r.get('snippet', ''))
-            url = r.get('href', r.get('url', '#'))
+            snippet = r.get('snippet', '')
+            url = r.get('url', '#')
+            engine = r.get('source_engine', 'Web Search')
             
-            if title in seen_titles:
+            clean_title_key = re.sub(r'[^\w]', '', title.lower())
+            if clean_title_key in seen_titles:
                 continue
-            seen_titles.add(title)
+            seen_titles.add(clean_title_key)
             
             title_lower = title.lower()
-            body_lower = body.lower()
+            snippet_lower = snippet.lower()
             
-            # Scan for explicit debunking phrases
+            # Scan for explicit fact-check / debunking titles online
             for dphrase in explicit_debunk_phrases:
-                if dphrase in title_lower or dphrase in body_lower:
+                if dphrase in title_lower or dphrase in snippet_lower:
                     debunk_matches_count += 1
                     break
                     
-            snippets.append(f"{title}. {body}")
-            sources.append({"title": title, "url": url, "snippet": body})
+            snippets.append(f"{title}. {snippet}")
+            sources.append({"title": title, "url": url, "snippet": snippet, "engine": engine})
             
             if len(sources) >= 5:
                 break
@@ -293,16 +318,16 @@ def fetch_and_corroborate_live_sources(claim: str):
             similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
             max_similarity = float(np.max(similarities)) if len(similarities) > 0 else 0.0
             
-            # Normalization mapping: Even 0.10 similarity to longer snippets indicates strong match
-            normalized_match = min(int((max_similarity ** 0.35) * 100 * 1.5), 100)
-            if max_similarity > 0.06 and normalized_match < 50:
-                normalized_match = 65
+            # Normalization mapping: TF-IDF similarity to longer snippets maps cleanly to 0-100 score
+            normalized_match = min(int((max_similarity ** 0.30) * 100 * 1.4), 100)
+            if max_similarity > 0.05 and normalized_match < 55:
+                normalized_match = 70
                 
             # Debunk flag assessment
-            is_debunked_online = debunk_matches_count >= 1 and (normalized_match >= 20)
+            is_debunked_online = debunk_matches_count >= 1
             
             if is_debunked_online:
-                normalized_match = max(0, normalized_match - (debunk_matches_count * 25))
+                normalized_match = min(normalized_match, 15)
                 
             for i, src in enumerate(sources):
                 src['similarity'] = round(float(similarities[i]) * 100, 1)
@@ -311,13 +336,14 @@ def fetch_and_corroborate_live_sources(claim: str):
 
     return [], 0.0, 0, False
 
-st.sidebar.header("📋 Benchmark Examples")
-st.sidebar.markdown("Select a sample claim to test the verification pipeline instantly:")
+# Sidebar Benchmark Selector
+st.sidebar.header("📋 Benchmark Test Samples")
+st.sidebar.markdown("Select a sample claim to test live Google News verification:")
 
 sample_claims = {
     "Select a benchmark...": "",
     "🟢 Real News: Lok Sabha Public Examination Bill": "Lok Sabha approved the Public Examination Prevention of Unfair Means Amendment Bill with stricter punishment of up to 10 years imprisonment.",
-    "🟢 Real News: ISRO Spaceflight Mission": "Indian Space Research Organisation successfully completes core stage engine testing for the upcoming Gaganyaan human spaceflight mission.",
+    "🟢 Real News: ISRO Gaganyaan Mission": "Indian Space Research Organisation successfully completes core stage engine testing for the upcoming Gaganyaan human spaceflight mission.",
     "🚨 Clickbait Fake: 5G & Bird DNA": "BREAKING URGENT: Internal leak proves 5G cell towers emit scalar frequencies that alter bird DNA, causing hundreds to fall dead!",
     "⚠️ Debunked Rumor: RBI Plastic Currency": "The Reserve Bank of India has officially announced that all current paper currency notes will be fully replaced with plastic bank notes starting next month."
 }
@@ -329,7 +355,7 @@ user_claim = st.text_area(
     "Enter a news headline, article paragraph, or claim to evaluate:",
     value=default_text,
     height=120,
-    placeholder="e.g., Paste headline or excerpt from Indian Express, BBC, or Reuters..."
+    placeholder="e.g., Paste headline or excerpt from Indian Express, BBC, Reuters, or PIB..."
 )
 
 col_btn, col_info = st.columns([1, 4])
@@ -338,7 +364,7 @@ with col_btn:
 
 if analyze_btn and user_claim.strip():
     
-    with st.spinner("Processing local ML classification & live web corroboration..."):
+    with st.spinner("Querying Google News RSS Grounding & Local NLP Engine..."):
         
         # Step 1: Local ML Classifier Prediction
         claim_vector = vectorizer.transform([user_claim])
@@ -347,33 +373,33 @@ if analyze_btn and user_claim.strip():
         # Step 2: Linguistic & Sensationalism Analysis
         ling_metrics = analyze_linguistic_markers(user_claim)
         
-        # Step 3: Dual-Layer Web Corroboration & Debunk Detection
+        # Step 3: Google News Grounding & Live Corroboration
         sources, raw_max_sim, corroboration_score, is_debunked_online = fetch_and_corroborate_live_sources(user_claim)
         
-        # Step 4: Final Classification Logic
+        # Step 4: Final Classification Decision Rules
         sensational_penalty = (100 - ling_metrics["sensationalism_score"])
 
         if is_debunked_online:
-            # Explicit fact check debunking articles found online
-            composite_truth_index = min(corroboration_score, 20)
+            # Fact check / debunking articles explicitly disproving claim found on Google News
+            composite_truth_index = 10
             verdict = "DEBUNKED FAKE / HOAX DETECTED"
             verdict_color = "#ef4444"
             verdict_icon = "🚨"
 
-        elif corroboration_score >= 20 or (corroboration_score >= 10 and ling_metrics["sensationalism_score"] < 15):
-            # Verified live web news matches found
+        elif corroboration_score >= 20:
+            # Verified live Google News coverage found
             composite_truth_index = int(
                 (corroboration_score * 0.70) + 
                 (sensational_penalty * 0.15) + 
                 (ml_prob_real * 0.15)
             )
-            composite_truth_index = max(composite_truth_index, 75)
+            composite_truth_index = max(composite_truth_index, 78)
             verdict = "VERIFIED REAL / HIGHLY LIKELY"
             verdict_color = "#22c55e"
             verdict_icon = "🟢"
 
-        elif ling_metrics["sensationalism_score"] >= 45:
-            # High clickbait/sensationalism
+        elif ling_metrics["sensationalism_score"] >= 40:
+            # Clickbait or sensational triggering text with 0 web matches
             composite_truth_index = max(15, 100 - ling_metrics["sensationalism_score"])
             verdict = "DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
             verdict_color = "#ef4444"
@@ -381,7 +407,7 @@ if analyze_btn and user_claim.strip():
 
         else:
             # Uncorroborated / No web matches found
-            composite_truth_index = 55
+            composite_truth_index = 50
             verdict = "UNVERIFIED / PENDING CORROBORATION"
             verdict_color = "#f59e0b"
             verdict_icon = "⚠️"
@@ -394,7 +420,7 @@ if analyze_btn and user_claim.strip():
         <h2 style="margin: 0; color: white;">{verdict_icon} {verdict}</h2>
         <p style="margin-top: 8px; color: #cbd5e1; font-size: 15px;">
             <b>Composite Truth Index:</b> {composite_truth_index}% &nbsp;|&nbsp; 
-            <b>Live Corroboration Match:</b> {corroboration_score}% &nbsp;|&nbsp; 
+            <b>Google News Grounding Match:</b> {corroboration_score}% &nbsp;|&nbsp; 
             <b>Sensationalism Index:</b> {ling_metrics['sensationalism_score']}/100
         </p>
     </div>
@@ -410,24 +436,24 @@ if analyze_btn and user_claim.strip():
     with col_m4:
         st.metric("Sensationalism Score", f"{ling_metrics['sensationalism_score']}/100")
 
-    tab1, tab2, tab3 = st.tabs(["🌐 Live Search Corroboration", "🧠 Linguistic & Bias Analysis", "⚙️ How This Engine Works"])
+    tab1, tab2, tab3 = st.tabs(["🌐 Google News Live Matches", "🧠 Linguistic & Bias Analysis", "⚙️ How This Engine Works"])
     
     with tab1:
-        st.markdown("### Live Web Search Matches (DuckDuckGo Dual-Layer Search)")
+        st.markdown("### Live News Search Grounding (Google News RSS Feed)")
         if is_debunked_online:
-            st.error("⚠️ **Fact-check or debunking articles disproving this claim were found online!**")
+            st.error("🚨 **Fact-check or debunking articles disproving this claim were found in news registries!**")
         
         if sources:
-            st.write(f"Found **{len(sources)}** relevant live web results. Cosine similarity evaluates match confidence.")
+            st.write(f"Found **{len(sources)}** live news results. TF-IDF Cosine similarity assesses factual alignment.")
             for idx, src in enumerate(sources, 1):
-                with st.expander(f"{idx}. {src['title']} (TF-IDF Match: {src.get('similarity', 0)}%)"):
+                with st.expander(f"{idx}. {src['title']} ({src.get('engine', 'Google News')} | TF-IDF Match: {src.get('similarity', 0)}%)"):
                     st.write(src['snippet'])
-                    st.markdown(f"[🔗 Read Full Source Article]({src['url']})")
+                    st.markdown(f"[🔗 Open Full Source Article]({src['url']})")
         else:
             st.info("No direct live news matches found. Unverified claims receive a neutral pending rating.")
 
     with tab2:
-        st.markdown("### Linguistic & Clickbait Red Flags")
+        st.markdown("### Linguistic & Clickbait Indicators")
         st.write(f"- **ALL-CAPS Word Ratio:** {ling_metrics['caps_ratio']}%")
         st.write(f"- **Exclamation Marks Count:** {ling_metrics['exclamations']}")
         st.write(f"- **Journalistic Vocabulary Boost:** +{ling_metrics['journalistic_score']} points")
@@ -435,14 +461,14 @@ if analyze_btn and user_claim.strip():
         if ling_metrics['triggers_found']:
             st.warning(f"⚠️ **Sensational Trigger Words Detected:** {', '.join(ling_metrics['triggers_found'])}")
         else:
-            st.success("✅ No obvious sensational clickbait trigger phrases detected.")
+            st.success("✅ No sensational clickbait trigger phrases detected.")
 
     with tab3:
         st.markdown("""
-        ### Technical Architecture (100% API-Free)
-        1. **Multi-Tier Search Query Generator**: Generates 3 search variations (Named Entities, Headline Excerpts, Core Words) to ensure news search engines find live coverage.
-        2. **Dual-Layer Search Engine**: Uses DuckDuckGo API with automatic fallback to direct HTTP HTML scraping if API rate-limiting occurs.
-        3. **Normalized Cosine Similarity & Debunk Detection**: Calculates vector similarity between claims and search snippets, checking for explicit fact-checking debunks.
+        ### Technical Architecture (100% Free & API-Key Free)
+        1. **Google News RSS Grounding**: Directly parses Google News XML RSS streams without facing rate limits or API blocks.
+        2. **Multi-Tier Search Query Generator**: Generates targeted query variations (Named Entities, Content Keywords) to match live coverage.
+        3. **TF-IDF Cosine Similarity & Fact-Check Detector**: Measures vector distance between user claims and news snippets while scanning for disproving fact-check articles.
         """)
 
 elif analyze_btn:
