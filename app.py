@@ -8,6 +8,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.linear_model import LogisticRegression
 from duckduckgo_search import DDGS
 
+# Streamlit Page Setup
 st.set_page_config(
     page_title="Fake News Detector (Pure NLP & Web Corroboration)",
     page_icon="🛡️",
@@ -23,7 +24,7 @@ This tool combines **TF-IDF Machine Learning**, **Cosine Similarity Live Corrobo
 @st.cache_resource
 def build_local_ml_model():
     """
-    Builds and trains a local TF-IDF + Logistic Regression model on expanded benchmark data.
+    Builds and trains a local TF-IDF + Logistic Regression model on benchmark news data.
     """
     training_data = [
         # Real News Samples
@@ -73,8 +74,8 @@ vectorizer, ml_model = build_local_ml_model()
 
 def extract_search_keywords(text: str) -> str:
     """
-    Strips stop words and punctuation to extract 5-7 core keywords 
-    so search engines like DuckDuckGo return relevant articles.
+    Extracts 4 to 6 core keywords by removing common stop words, 
+    allowing DuckDuckGo to match actual news coverage.
     """
     clean_text = re.sub(r'[^\w\s]', '', text.lower())
     words = clean_text.split()
@@ -88,8 +89,7 @@ def extract_search_keywords(text: str) -> str:
         "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "s", "t", 
         "can", "will", "just", "don", "should", "now", "of", "it", "that", "this", "these", 
         "those", "they", "them", "their", "what", "which", "who", "whom", "he", "him", "his", 
-        "she", "her", "hers", "has", "have", "had", "having", "do", "does", "did", "doing",
-        "has", "officially", "announced", "all", "current", "will", "be", "fully"
+        "she", "her", "hers", "has", "have", "had", "having", "do", "does", "did", "doing"
     ])
     
     keywords = [w for w in words if w not in common_stopwords and len(w) > 2]
@@ -156,15 +156,16 @@ def analyze_linguistic_markers(text: str):
 def fetch_and_corroborate_live_sources(claim: str):
     """
     Searches DuckDuckGo directly for matching news coverage, computes
-    normalized TF-IDF Cosine Similarity, and scans for debunk/fact-check keywords.
+    normalized TF-IDF Cosine Similarity, and scans snippet titles/bodies for specific debunking phrases.
     """
     sources = []
     debunk_matches_count = 0
     
-    debunk_keywords = [
-        "fact check", "fact-check", "fake", "hoax", "false", "myth", 
-        "denies", "rumour", "rumor", "baseless", "clarifies", 
-        "misleading", "debunk", "untrue", "fake news", "no truth", "viral claim"
+    # Explicit debunk phrases to check in snippet titles and content
+    explicit_debunk_phrases = [
+        "fact check", "fact-check", "fake news", "hoax", "false claim", 
+        "myth", "debunked", "baseless", "no truth", "viral rumour", "viral rumor",
+        "misleading claim", "disproved"
     ]
     
     try:
@@ -180,11 +181,13 @@ def fetch_and_corroborate_live_sources(claim: str):
                 title = r.get('title', 'Web Result')
                 body = r.get('body', '')
                 url = r.get('href', '#')
-                snippet_text = f"{title}. {body}".lower()
                 
-                # Check for debunking signals in search snippets
-                for dkw in debunk_keywords:
-                    if dkw in snippet_text:
+                title_lower = title.lower()
+                body_lower = body.lower()
+                
+                # Check for explicit debunk phrases in snippet title or body
+                for dphrase in explicit_debunk_phrases:
+                    if dphrase in title_lower or dphrase in body_lower:
                         debunk_matches_count += 1
                         break
                         
@@ -199,12 +202,12 @@ def fetch_and_corroborate_live_sources(claim: str):
             similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
             max_similarity = float(np.max(similarities)) if len(similarities) > 0 else 0.0
             
-            # Base normalized match
-            normalized_match = min(int((max_similarity ** 0.5) * 100 * 1.6), 100)
+            # Non-linear similarity normalization (maps 0.12+ to 60-100%)
+            normalized_match = min(int((max_similarity ** 0.45) * 100 * 1.5), 100)
             
-            # DEBUNK PENALTY:
-            # If search results contain fact-check/debunking terms, the claim is a known rumor being disproved online!
-            is_debunked_online = debunk_matches_count >= 1
+            # DEBUNK FLAG: Triggered if at least 2 debunking snippets or a debunk title is found
+            is_debunked_online = debunk_matches_count >= 1 and (normalized_match >= 15)
+            
             if is_debunked_online:
                 normalized_match = max(0, normalized_match - (debunk_matches_count * 30))
             
@@ -262,26 +265,27 @@ if analyze_btn and user_claim.strip():
         journalistic_boost = ling_metrics["journalistic_score"]
 
         if is_debunked_online:
-            # Fact check articles were found online disproving this claim
-            composite_truth_index = min(corroboration_score, 30)
-        elif len(sources) > 0 and corroboration_score > 25:
-            # Strong genuine web corroboration found
+            # Fact check articles disproving this claim were explicitly found online
+            composite_truth_index = min(corroboration_score, 25)
+        elif corroboration_score >= 25 or (corroboration_score >= 15 and ling_metrics["sensationalism_score"] < 15):
+            # Strong or clean genuine web corroboration found
             composite_truth_index = int(
-                (corroboration_score * 0.60) + 
+                (corroboration_score * 0.55) + 
                 (sensational_penalty * 0.25) + 
-                (ml_prob_real * 0.15)
+                (ml_prob_real * 0.20)
             )
+            composite_truth_index = max(composite_truth_index, 68)  # Boost authentic news match
         else:
             # Fallback for uncorroborated text based on style and tone
             base_score = 65 + (journalistic_boost * 0.25) - (ling_metrics["sensationalism_score"] * 0.50)
             composite_truth_index = int(np.clip(base_score, 15, 85))
 
         # Determine Final Verdict
-        if is_debunked_online or composite_truth_index < 35:
+        if is_debunked_online or composite_truth_index < 35 or ling_metrics["sensationalism_score"] >= 50:
             verdict = "DEBUNKED FAKE / HOAX DETECTED"
             verdict_color = "#ef4444"
             verdict_icon = "🚨"
-        elif composite_truth_index >= 65 and corroboration_score >= 30:
+        elif composite_truth_index >= 65:
             verdict = "VERIFIED REAL / HIGHLY LIKELY"
             verdict_color = "#22c55e"
             verdict_icon = "🟢"
@@ -321,7 +325,7 @@ if analyze_btn and user_claim.strip():
     with tab1:
         st.markdown("### Live Web Search Matches (DuckDuckGo)")
         if is_debunked_online:
-            st.error("⚠️ **Fact-Check/Debunking signals found in online news coverage for this claim!**")
+            st.error("⚠️ **Fact-check or debunking articles disproving this claim were found online!**")
         
         if sources:
             st.write(f"Found **{len(sources)}** relevant web results. Cosine similarity evaluates match confidence.")
@@ -348,7 +352,7 @@ if analyze_btn and user_claim.strip():
         ### Technical Architecture (100% API-Free)
         1. **Smart Keyword Extraction**: Converts raw headlines and article paragraphs into concise search queries.
         2. **DuckDuckGo Live Scraping**: Fetches current news headlines and excerpts without needing API keys.
-        3. **Normalized TF-IDF Cosine Similarity & Debunk Detection**: Quantifies similarity overlap while checking if live search snippets disproves or debunks the claim.
+        3. **Normalized TF-IDF Cosine Similarity & Debunk Detection**: Quantifies similarity overlap while checking if live search snippets disprove or debunk the claim.
         4. **Journalistic & Sensational Heuristics**: Analyzes reporting style, attribution phrases, ALL-CAPS density, and sensational clickbait trigger words.
         """)
 
