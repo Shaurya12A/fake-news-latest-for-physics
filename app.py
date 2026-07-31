@@ -226,7 +226,7 @@ if analyze_btn and user_claim.strip():
             <b>Sensationalism Index:</b> {ling_metrics['sensationalism_score']}/100
         </p>
     </div>
-    """, unsafe_html=True)
+    """, unsafe_allow_html=True)
     
     # Metric Gauges
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
