@@ -66,7 +66,7 @@ if analyze_btn and user_claim.strip():
 
             # Call Gemini with Google Search Grounding enabled
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     tools=[{"google_search": {}}]
