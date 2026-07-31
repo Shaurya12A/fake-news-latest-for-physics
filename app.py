@@ -13,16 +13,100 @@ from sklearn.linear_model import LogisticRegression
 from duckduckgo_search import DDGS
 
 st.set_page_config(
-    page_title="Algorithmic Fake News Detector & Fact-Checker",
+    page_title="VeriFact AI — Command Center",
     page_icon="🛡️",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-st.title("🛡️ Algorithmic Fake News Detector & Fact-Checker")
+# Custom Command Center Glassmorphism Styling
 st.markdown("""
-*100% Free, Google News RSS Grounded Verification Engine — No AI API Keys Required!*  
-Combines **Google News Live Search Corroboration**, **Multi-Tier Search Queries**, **Fact-Check Debunk Detection**, and **Linguistic Analysis**.
-""")
+<style>
+    /* Dark Theme Base Overrides */
+    .stApp {
+        background-color: #0b0f19;
+        color: #f1f5f9;
+    }
+    
+    /* Main Header Styling */
+    .command-header {
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.9) 0%, rgba(30, 41, 59, 0.8) 100%);
+        border: 1px solid rgba(51, 65, 85, 0.6);
+        border-radius: 16px;
+        padding: 24px;
+        margin-bottom: 24px;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    
+    .command-title {
+        font-size: 28px;
+        font-weight: 800;
+        background: linear-gradient(90deg, #38bdf8, #34d399);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin: 0;
+    }
+    
+    .command-subtitle {
+        color: #94a3b8;
+        font-size: 14px;
+        margin-top: 6px;
+    }
+
+    /* Metric Box Styling */
+    .metric-card {
+        background: rgba(15, 23, 42, 0.7);
+        border: 1px solid rgba(51, 65, 85, 0.6);
+        border-radius: 12px;
+        padding: 16px;
+        text-align: center;
+        backdrop-filter: blur(10px);
+    }
+    
+    .metric-value {
+        font-size: 26px;
+        font-weight: 800;
+        color: #38bdf8;
+    }
+    
+    .metric-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: #64748b;
+        font-weight: 700;
+        margin-top: 4px;
+    }
+
+    /* Custom Progress Bar Styling */
+    .progress-container {
+        width: 100%;
+        background-color: #1e293b;
+        border-radius: 8px;
+        height: 10px;
+        overflow: hidden;
+        margin-top: 6px;
+    }
+    
+    .progress-bar-fill {
+        height: 100%;
+        border-radius: 8px;
+        transition: width 0.6s ease;
+    }
+
+    /* Streamlit Input Fixes */
+    .stTextArea textarea {
+        background-color: #0f172a !important;
+        color: #f8fafc !important;
+        border: 1px solid #334155 !important;
+        border-radius: 12px !important;
+    }
+    .stTextArea textarea:focus {
+        border-color: #38bdf8 !important;
+        box-shadow: 0 0 10px rgba(56, 189, 248, 0.3) !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 @st.cache_resource
 def build_local_ml_model():
@@ -83,7 +167,6 @@ def extract_search_queries(text: str) -> list[str]:
     Generates multi-tier targeted search queries from claim text or long paragraphs.
     Handles full-length articles by prioritizing lead sentences and key entities.
     """
-    # Split text into sentences to isolate lead claims
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if len(s.strip()) > 8]
     lead_text = " ".join(sentences[:2]) if sentences else text
     
@@ -117,7 +200,7 @@ def extract_search_queries(text: str) -> list[str]:
     
     queries = []
     
-    # Tier 1: Lead Entities (first 4 proper nouns from lead sentence)
+    # Tier 1: Lead Entities
     if lead_entities:
         q1 = " ".join(lead_entities[:4])
         queries.append(q1)
@@ -146,16 +229,13 @@ def analyze_linguistic_markers(text: str):
     words = text.split()
     total_words = max(len(words), 1)
     
-    # Capitalization ratio
     upper_words = sum(1 for w in words if w.isupper() and len(w) > 1)
     caps_ratio = (upper_words / total_words) * 100
     
-    # Punctuation density
     exclamations = text.count("!")
     questions = text.count("?")
     sensational_punct = exclamations + (questions * 0.5)
     
-    # Clickbait & sensational triggers
     clickbait_keywords = [
         "shocking", "miracle", "secret", "banned", "cure", "urgent", "leak",
         "they don't want you to know", "doctors hate", "forward this", "unbelievable",
@@ -167,7 +247,6 @@ def analyze_linguistic_markers(text: str):
     matched_triggers = [kw for kw in clickbait_keywords if kw in text_lower]
     trigger_score = min(len(matched_triggers) * 25, 100)
     
-    # Journalistic Tone Markers
     journalistic_keywords = [
         "according to", "reported", "announced", "published", "study", "researchers",
         "officials", "spokesperson", "statement", "confirmed", "data", "percent", "ministry",
@@ -179,7 +258,6 @@ def analyze_linguistic_markers(text: str):
     matched_journalistic = [kw for kw in journalistic_keywords if kw in text_lower]
     journalistic_score = min(len(matched_journalistic) * 20, 100)
 
-    # Sensationalism Index (0 to 100)
     sensationalism_score = int(min(
         max((caps_ratio * 2.0) + (sensational_punct * 15) + (trigger_score * 0.6) - (journalistic_score * 0.1), 0),
         100
@@ -311,7 +389,6 @@ def fetch_and_corroborate_live_sources(claim: str):
             title_lower = title.lower()
             snippet_lower = snippet.lower()
             
-            # Scan for explicit fact-check / debunking titles online
             for dphrase in explicit_debunk_phrases:
                 if dphrase in title_lower or dphrase in snippet_lower:
                     debunk_matches_count += 1
@@ -324,7 +401,6 @@ def fetch_and_corroborate_live_sources(claim: str):
                 break
         
         if snippets:
-            # Sentence-Level & Paragraph Matching to prevent vector length dilution on long articles
             sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', claim) if len(s.strip()) > 10]
             compare_units = [claim] + sentences if sentences else [claim]
             
@@ -332,7 +408,6 @@ def fetch_and_corroborate_live_sources(claim: str):
             sim_vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
             tfidf_matrix = sim_vectorizer.fit_transform(all_texts)
             
-            # Compare each sentence and full text against all retrieved web snippets
             num_units = len(compare_units)
             unit_vectors = tfidf_matrix[0:num_units]
             snippet_vectors = tfidf_matrix[num_units:]
@@ -341,7 +416,6 @@ def fetch_and_corroborate_live_sources(claim: str):
             snippet_max_sims = np.max(sim_matrix, axis=0) if sim_matrix.size > 0 else np.zeros(len(snippets))
             max_similarity = float(np.max(snippet_max_sims)) if len(snippet_max_sims) > 0 else 0.0
             
-            # Calibrated mapping for news snippets (works for both short headlines and long paragraphs):
             if max_similarity >= 0.15:
                 normalized_match = min(int(max_similarity * 250), 100)
             elif max_similarity >= 0.08:
@@ -362,9 +436,8 @@ def fetch_and_corroborate_live_sources(claim: str):
 
     return [], 0.0, 0, False
 
-# Sidebar Benchmark Selector
-st.sidebar.header("📋 Benchmark Test Samples")
-st.sidebar.markdown("Select a sample claim to test live Google News verification:")
+st.sidebar.markdown("### 📋 Verification Benchmarks")
+st.sidebar.markdown("Select a sample claim to test live verification:")
 
 sample_claims = {
     "Select a benchmark...": "",
@@ -378,8 +451,22 @@ sample_claims = {
 selected_sample = st.sidebar.selectbox("Choose Sample:", list(sample_claims.keys()))
 default_text = sample_claims[selected_sample] if selected_sample != "Select a benchmark..." else ""
 
+st.markdown("""
+<div class="command-header">
+    <div style="display: flex; align-items: center; justify-content: space-between;">
+        <div>
+            <h1 class="command-title">🛡️ VeriFact AI — Command Center</h1>
+            <p class="command-subtitle">100% Free Grounded News Corroboration Engine — Google News RSS + TF-IDF Vector Analysis</p>
+        </div>
+        <div style="text-align: right; font-size: 12px; color: #34d399; font-weight: 700; background: rgba(52, 211, 153, 0.1); padding: 6px 12px; border-radius: 20px; border: 1px solid rgba(52, 211, 153, 0.3);">
+            ● LIVE ENGINE ONLINE
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
 user_claim = st.text_area(
-    "Enter a news headline, article paragraph, or claim to evaluate:",
+    "Enter Headline, Article Paragraph, or News Claim for Analysis:",
     value=default_text,
     height=120,
     placeholder="e.g., Paste headline or excerpt from Indian Express, BBC, Reuters, or PIB..."
@@ -387,23 +474,19 @@ user_claim = st.text_area(
 
 col_btn, col_info = st.columns([1, 4])
 with col_btn:
-    analyze_btn = st.button("🔎 Analyze Claim", type="primary", use_container_width=True)
+    analyze_btn = st.button("🔎 Run Verification", type="primary", use_container_width=True)
 
 if analyze_btn and user_claim.strip():
     
-    with st.spinner("Querying Google News RSS Grounding & Local NLP Engine..."):
+    with st.spinner("Analyzing claim against Google News RSS & Sentence-Level TF-IDF Matrix..."):
         
-        # Step 1: Local ML Classifier Prediction
         claim_vector = vectorizer.transform([user_claim])
         ml_prob_real = ml_model.predict_proba(claim_vector)[0][1] * 100
         
-        # Step 2: Linguistic & Sensationalism Analysis
         ling_metrics = analyze_linguistic_markers(user_claim)
         
-        # Step 3: Google News Grounding & Live Corroboration
         sources, raw_max_sim, corroboration_score, is_debunked_online = fetch_and_corroborate_live_sources(user_claim)
         
-        # Step 4: Decision Rules Engine
         sensational_penalty = (100 - ling_metrics["sensationalism_score"])
 
         if is_debunked_online:
@@ -413,14 +496,12 @@ if analyze_btn and user_claim.strip():
             verdict_icon = "🚨"
 
         elif ling_metrics["sensationalism_score"] >= 40 and corroboration_score < 40:
-            # High sensationalism without strong direct news corroboration
             composite_truth_index = max(10, 100 - ling_metrics["sensationalism_score"] - 15)
             verdict = "DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
             verdict_color = "#ef4444"
             verdict_icon = "🚨"
 
         elif corroboration_score >= 20 or raw_max_sim >= 0.10:
-            # Verified live Google News coverage found (corroboration >= 20%)
             composite_truth_index = int(
                 (max(corroboration_score, 65) * 0.70) + 
                 (sensational_penalty * 0.15) + 
@@ -432,64 +513,99 @@ if analyze_btn and user_claim.strip():
             verdict_icon = "🟢"
 
         elif ling_metrics["journalistic_score"] >= 20 and corroboration_score < 20:
-            # Calm AI Fake (Formal wording, but < 20% live news corroboration)
             composite_truth_index = 30
             verdict = "UNVERIFIED / PROBABLE FAKE NEWS"
             verdict_color = "#f59e0b"
             verdict_icon = "⚠️"
 
         else:
-            # Uncorroborated / Pending rating
             composite_truth_index = 45
             verdict = "UNVERIFIED / PENDING CORROBORATION"
             verdict_color = "#f59e0b"
             verdict_icon = "⚠️"
 
     st.markdown("---")
-    st.subheader("📋 Verification Dashboard")
     
     st.markdown(f"""
-    <div style="background-color: rgba(30, 41, 59, 0.8); padding: 20px; border-radius: 12px; border-left: 6px solid {verdict_color}; margin-bottom: 20px;">
-        <h2 style="margin: 0; color: white;">{verdict_icon} {verdict}</h2>
-        <p style="margin-top: 8px; color: #cbd5e1; font-size: 15px;">
-            <b>Composite Truth Index:</b> {composite_truth_index}% &nbsp;|&nbsp; 
-            <b>Google News Grounding Match:</b> {corroboration_score}% &nbsp;|&nbsp; 
-            <b>Sensationalism Index:</b> {ling_metrics['sensationalism_score']}/100
+    <div style="background-color: rgba(15, 23, 42, 0.85); padding: 22px; border-radius: 16px; border-left: 6px solid {verdict_color}; border-top: 1px solid rgba(255,255,255,0.08); margin-bottom: 24px;">
+        <h2 style="margin: 0; color: white; font-size: 22px; display: flex; align-items: center; gap: 10px;">
+            <span>{verdict_icon}</span> <span>{verdict}</span>
+        </h2>
+        <p style="margin-top: 8px; color: #cbd5e1; font-size: 14px;">
+            <b>Truth Index:</b> {composite_truth_index}% &nbsp;|&nbsp; 
+            <b>Google News Corroboration:</b> {corroboration_score}% &nbsp;|&nbsp; 
+            <b>Sensationalism Score:</b> {ling_metrics['sensationalism_score']}/100
         </p>
     </div>
     """, unsafe_allow_html=True)
     
-    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-    with col_m1:
-        st.metric("Truth Index Score", f"{composite_truth_index}%")
-    with col_m2:
-        st.metric("Web Corroboration", f"{corroboration_score}%")
-    with col_m3:
-        st.metric("Journalistic Tone", f"{ling_metrics['journalistic_score']}/100")
-    with col_m4:
-        st.metric("Sensationalism Score", f"{ling_metrics['sensationalism_score']}/100")
+    # Command Center Metrics Grid
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color:{verdict_color}">{composite_truth_index}%</div>
+            <div class="metric-label">Truth Index</div>
+            <div class="progress-container">
+                <div class="progress-bar-fill" style="width: {composite_truth_index}%; background-color: {verdict_color};"></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color:#38bdf8">{corroboration_score}%</div>
+            <div class="metric-label">Web Grounding</div>
+            <div class="progress-container">
+                <div class="progress-bar-fill" style="width: {corroboration_score}%; background-color: #38bdf8;"></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m3:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color:#a855f7">{ling_metrics['journalistic_score']}/100</div>
+            <div class="metric-label">Journalistic Tone</div>
+            <div class="progress-container">
+                <div class="progress-bar-fill" style="width: {ling_metrics['journalistic_score']}%; background-color: #a855f7;"></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with m4:
+        sens_color = "#ef4444" if ling_metrics['sensationalism_score'] >= 40 else "#34d399"
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-value" style="color:{sens_color}">{ling_metrics['sensationalism_score']}/100</div>
+            <div class="metric-label">Sensationalism</div>
+            <div class="progress-container">
+                <div class="progress-bar-fill" style="width: {ling_metrics['sensationalism_score']}%; background-color: {sens_color};"></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    tab1, tab2, tab3 = st.tabs(["🌐 Google News Live Matches", "🧠 Linguistic & Bias Analysis", "⚙️ How This Engine Works"])
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    tab1, tab2, tab3 = st.tabs(["🌐 Google News Live Grounding", "🧠 Linguistic Analysis", "⚙️ Technical Architecture"])
     
     with tab1:
-        st.markdown("### Live News Search Grounding (Google News RSS Feed)")
+        st.markdown("### Live Corroboration Feed")
         if is_debunked_online:
-            st.error("🚨 **Fact-check or debunking articles disproving this claim were found in news registries!**")
+            st.error("🚨 **Fact-check or debunking articles disproving this claim were found in online news registries!**")
         
         if sources:
-            st.write(f"Found **{len(sources)}** live news results. TF-IDF Cosine similarity assesses factual alignment.")
+            st.write(f"Found **{len(sources)}** live news matches. Sentence-Level TF-IDF Cosine Similarity assesses claim alignment.")
             for idx, src in enumerate(sources, 1):
-                with st.expander(f"{idx}. {src['title']} ({src.get('engine', 'Google News')} | TF-IDF Match: {src.get('similarity', 0)}%)"):
+                with st.expander(f"{idx}. {src['title']} ({src.get('engine', 'Google News')} | Match: {src.get('similarity', 0)}%)"):
                     st.write(src['snippet'])
-                    st.markdown(f"[🔗 Open Full Source Article]({src['url']})")
+                    st.markdown(f"[🔗 Open Source Article]({src['url']})")
         else:
-            st.info("No direct live news matches found. Unverified claims receive a neutral pending rating.")
+            st.info("No direct live news matches found on search engines. Unverified claims receive a neutral pending score.")
 
     with tab2:
         st.markdown("### Linguistic & Clickbait Indicators")
         st.write(f"- **ALL-CAPS Word Ratio:** {ling_metrics['caps_ratio']}%")
         st.write(f"- **Exclamation Marks Count:** {ling_metrics['exclamations']}")
-        st.write(f"- **Journalistic Vocabulary Boost:** +{ling_metrics['journalistic_score']} points")
+        st.write(f"- **Journalistic Tone Score:** {ling_metrics['journalistic_score']}/100")
         
         if ling_metrics['triggers_found']:
             st.warning(f"⚠️ **Sensational Trigger Words Detected:** {', '.join(ling_metrics['triggers_found'])}")
@@ -498,10 +614,10 @@ if analyze_btn and user_claim.strip():
 
     with tab3:
         st.markdown("""
-        ### Technical Architecture (100% Free & API-Key Free)
-        1. **Google News RSS Grounding**: Directly parses Google News XML RSS streams without facing rate limits or API blocks.
-        2. **Multi-Tier Search Query Generator**: Generates targeted query variations (Named Entities, Content Keywords) to match live coverage.
-        3. **TF-IDF Cosine Similarity & Fact-Check Detector**: Measures vector distance between user claims and news snippets while scanning for disproving fact-check articles.
+        ### VeriFact AI Engine Specifications
+        1. **Google News RSS Grounding**: Searches Google News XML RSS streams without facing rate limits or API key restrictions.
+        2. **Multi-Tier Search Query Generator**: Generates targeted query variations (Named Entities, Content Keywords) to locate live coverage.
+        3. **Sentence-Level TF-IDF Vector Math**: Measures vector similarity between claim sentences and live web snippets to eliminate vector length dilution on full-length articles.
         """)
 
 elif analyze_btn:
