@@ -80,21 +80,25 @@ vectorizer, ml_model = build_local_ml_model()
 
 def extract_search_queries(text: str) -> list[str]:
     """
-    Generates multi-tier targeted search queries from claim text.
+    Generates multi-tier targeted search queries from claim text or long paragraphs.
+    Handles full-length articles by prioritizing lead sentences and key entities.
     """
-    words = text.split()
-    proper_nouns = []
+    # Split text into sentences to isolate lead claims
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if len(s.strip()) > 8]
+    lead_text = " ".join(sentences[:2]) if sentences else text
     
-    for w in words:
-        clean_w = re.sub(r'[^\w]', '', w)
-        if len(clean_w) > 1 and clean_w[0].isupper():
-            if clean_w.lower() not in ["the", "this", "that", "breaking", "urgent", "according", "minister", "official"]:
-                proper_nouns.append(clean_w)
-                
-    unique_entities = list(dict.fromkeys(proper_nouns))
-    
-    clean_text = re.sub(r'[^\w\s]', '', text.lower())
-    all_words = clean_text.split()
+    def get_entities(s):
+        words = s.split()
+        proper_nouns = []
+        for w in words:
+            clean_w = re.sub(r'[^\w]', '', w)
+            if len(clean_w) > 1 and clean_w[0].isupper():
+                if clean_w.lower() not in ["the", "this", "that", "breaking", "urgent", "according", "minister", "official", "union", "report", "statement"]:
+                    proper_nouns.append(clean_w)
+        return list(dict.fromkeys(proper_nouns))
+        
+    lead_entities = get_entities(lead_text)
+    all_entities = get_entities(text)
     
     stopwords = set([
         "the", "a", "an", "is", "are", "was", "were", "and", "or", "but", "in", "on", "at", 
@@ -108,24 +112,30 @@ def extract_search_queries(text: str) -> list[str]:
         "had", "having", "do", "does", "did", "according", "reports", "stated", "official", "published", "approved"
     ])
     
-    content_words = [w for w in all_words if w not in stopwords and len(w) > 2]
+    clean_lead = re.sub(r'[^\w\s]', '', lead_text.lower())
+    lead_words = [w for w in clean_lead.split() if w not in stopwords and len(w) > 2]
     
     queries = []
     
-    # Tier 1: Entities (e.g. Lok Sabha Public Examination)
-    if unique_entities:
-        q1 = " ".join(unique_entities[:4])
+    # Tier 1: Lead Entities (first 4 proper nouns from lead sentence)
+    if lead_entities:
+        q1 = " ".join(lead_entities[:4])
         queries.append(q1)
         
-    # Tier 2: Top 5 main content words
-    if len(content_words) >= 3:
-        q2 = " ".join(content_words[:5])
+    # Tier 2: All Key Entities across full text
+    if all_entities and len(all_entities) > 2:
+        q2 = " ".join(all_entities[:4])
         queries.append(q2)
         
-    # Tier 3: Core 3 content words
-    if len(content_words) >= 2:
-        q3 = " ".join(content_words[:3])
+    # Tier 3: Core content words from lead sentence
+    if len(lead_words) >= 3:
+        q3 = " ".join(lead_words[:5])
         queries.append(q3)
+        
+    # Tier 4: Core 3 content words
+    if len(lead_words) >= 2:
+        q4 = " ".join(lead_words[:3])
+        queries.append(q4)
         
     return list(dict.fromkeys(queries))
 
@@ -252,7 +262,7 @@ def fallback_duckduckgo_search(query: str):
 def fetch_and_corroborate_live_sources(claim: str):
     """
     Queries Google News RSS and DuckDuckGo for live coverage.
-    Computes TF-IDF Cosine Similarity and checks for debunking flags in live news snippets.
+    Computes Sentence-Level & Paragraph TF-IDF Cosine Similarity to prevent vector dilution on long texts.
     """
     sources = []
     debunk_matches_count = 0
@@ -271,15 +281,17 @@ def fetch_and_corroborate_live_sources(claim: str):
         res_gnews = google_news_rss_search(q)
         if res_gnews:
             raw_results.extend(res_gnews)
-            break
+            if len(raw_results) >= 5:
+                break
             
     # Layer 2: DuckDuckGo Fallback Search
-    if not raw_results:
+    if len(raw_results) < 3:
         for q in search_queries:
             res_ddg = fallback_duckduckgo_search(q)
             if res_ddg:
                 raw_results.extend(res_ddg)
-                break
+                if len(raw_results) >= 5:
+                    break
                 
     if raw_results:
         snippets = []
@@ -308,20 +320,28 @@ def fetch_and_corroborate_live_sources(claim: str):
             snippets.append(f"{title}. {snippet}")
             sources.append({"title": title, "url": url, "snippet": snippet, "engine": engine})
             
-            if len(sources) >= 5:
+            if len(sources) >= 6:
                 break
         
         if snippets:
-            # Compute TF-IDF Cosine Similarity
-            all_texts = [claim] + snippets
+            # Sentence-Level & Paragraph Matching to prevent vector length dilution on long articles
+            sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', claim) if len(s.strip()) > 10]
+            compare_units = [claim] + sentences if sentences else [claim]
+            
+            all_texts = compare_units + snippets
             sim_vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
             tfidf_matrix = sim_vectorizer.fit_transform(all_texts)
             
-            similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
-            max_similarity = float(np.max(similarities)) if len(similarities) > 0 else 0.0
+            # Compare each sentence and full text against all retrieved web snippets
+            num_units = len(compare_units)
+            unit_vectors = tfidf_matrix[0:num_units]
+            snippet_vectors = tfidf_matrix[num_units:]
             
-            # Calibrated mapping for news snippets:
-            # Short news claims matching longer web snippets typically range between 0.10 and 0.35 raw similarity.
+            sim_matrix = cosine_similarity(unit_vectors, snippet_vectors)
+            snippet_max_sims = np.max(sim_matrix, axis=0) if sim_matrix.size > 0 else np.zeros(len(snippets))
+            max_similarity = float(np.max(snippet_max_sims)) if len(snippet_max_sims) > 0 else 0.0
+            
+            # Calibrated mapping for news snippets (works for both short headlines and long paragraphs):
             if max_similarity >= 0.15:
                 normalized_match = min(int(max_similarity * 250), 100)
             elif max_similarity >= 0.08:
@@ -335,7 +355,8 @@ def fetch_and_corroborate_live_sources(claim: str):
                 normalized_match = min(normalized_match, 15)
                 
             for i, src in enumerate(sources):
-                src['similarity'] = round(float(similarities[i]) * 100, 1)
+                snippet_best_sim = float(snippet_max_sims[i])
+                src['similarity'] = round(snippet_best_sim * 100, 1)
                 
             return sources, max_similarity, normalized_match, is_debunked_online
 
