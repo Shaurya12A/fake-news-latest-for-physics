@@ -24,7 +24,6 @@ st.set_page_config(
 if "verification_history" not in st.session_state:
     st.session_state.verification_history = []
 
-# Custom Command Center Glassmorphism Styling
 st.markdown("""
 <style>
     /* Dark Theme Base Overrides */
@@ -743,8 +742,10 @@ if analyze_btn and user_claim.strip():
         if eval_sources:
             st.write(f"Found **{len(eval_sources)}** live news matches. Sentence-Level TF-IDF Cosine Similarity assesses claim alignment:")
             for idx, src in enumerate(eval_sources, 1):
+                badge_col = src['badge_color']
+                tier_lab = src['tier_label']
                 with st.expander(f"{idx}. {src['title']} ({src['tier_badge']} | Match: {src.get('similarity', 0)}%)"):
-                    st.markdown(f"<span style='color:{src[\"badge_color\"]}; font-weight:bold;'>{src['tier_label']}</span>", unsafe_allow_html=True)
+                    st.markdown(f"<span style='color:{badge_col}; font-weight:bold;'>{tier_lab}</span>", unsafe_allow_html=True)
                     st.write(src['snippet'])
                     st.markdown(f"[🔗 Open Source Article]({src['url']})")
         else:
@@ -802,7 +803,6 @@ if analyze_btn and user_claim.strip():
 elif analyze_btn:
     st.warning("Please enter a claim or headline to analyze.")
 
-# Render Verification History in Tab when not analyzing
 elif not analyze_btn and st.session_state.verification_history:
     st.markdown("---")
     st.markdown("### 📜 Session Verification Audit Log")
