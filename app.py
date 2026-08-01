@@ -645,4 +645,3 @@ if st.session_state.verification_history:
         file_name="verifact_audit_history.csv",
         mime="text/csv"
     )
-```eof
