@@ -9,12 +9,16 @@ from datetime import datetime
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+# Optional Fallback Import for DuckDuckGo
 try:
     from duckduckgo_search import DDGS
     HAS_DDG = True
 except ImportError:
     HAS_DDG = False
 
+# ==========================================
+# PAGE CONFIGURATION & DARK THEME CSS
+# ==========================================
 st.set_page_config(
     page_title="VeriFact AI — Misinformation Command Center",
     page_icon="🛡️",
@@ -22,16 +26,12 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Command Center Glassmorphism Styling
 st.markdown("""
 <style>
-    /* Dark Theme Base */
     .stApp {
         background-color: #0f172a;
         color: #f8fafc;
     }
-    
-    /* Card Container */
     .command-card {
         background: rgba(30, 41, 59, 0.7);
         backdrop-filter: blur(12px);
@@ -40,8 +40,6 @@ st.markdown("""
         padding: 24px;
         margin-bottom: 20px;
     }
-    
-    /* Status Badges */
     .badge-real {
         background-color: rgba(16, 185, 129, 0.15);
         color: #34d399;
@@ -51,7 +49,6 @@ st.markdown("""
         font-weight: 700;
         font-size: 0.85rem;
     }
-    
     .badge-fake {
         background-color: rgba(239, 68, 68, 0.15);
         color: #f87171;
@@ -61,7 +58,6 @@ st.markdown("""
         font-weight: 700;
         font-size: 0.85rem;
     }
-    
     .badge-warning {
         background-color: rgba(245, 158, 11, 0.15);
         color: #fbbf24;
@@ -71,8 +67,6 @@ st.markdown("""
         font-weight: 700;
         font-size: 0.85rem;
     }
-
-    /* Metric Gauge Box */
     .metric-box {
         background: rgba(15, 23, 42, 0.8);
         border: 1px solid rgba(255, 255, 255, 0.05);
@@ -80,13 +74,11 @@ st.markdown("""
         padding: 16px;
         text-align: center;
     }
-
     .metric-value {
         font-size: 2rem;
         font-weight: 800;
         color: #38bdf8;
     }
-
     .metric-label {
         font-size: 0.75rem;
         color: #94a3b8;
@@ -96,6 +88,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Initialize Session State
 if 'verification_history' not in st.session_state:
     st.session_state.verification_history = []
 
@@ -108,20 +101,15 @@ if 'feedback_dataset' not in st.session_state:
             'predicted_verdict': '🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT',
             'is_correct': 'Yes 👍',
             'corrected_label': '🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT'
-        },
-        {
-            'timestamp': '2026-03-02 14:22:10',
-            'type': 'Text Claim',
-            'content': 'ISRO Gaganyaan engine testing completed',
-            'predicted_verdict': '🟢 VERIFIED REAL / HIGHLY LIKELY',
-            'is_correct': 'Yes 👍',
-            'corrected_label': '🟢 VERIFIED REAL / HIGHLY LIKELY'
         }
     ]
 
 if 'last_analyzed_claim' not in st.session_state:
     st.session_state.last_analyzed_claim = None
 
+# ==========================================
+# SOURCE CREDIBILITY DATABASE
+# ==========================================
 TIER1_SOURCES = [
     "pib", "reuters", "bbc", "the hindu", "indian express", "ndtv", 
     "times of india", "altnews", "boomlive", "factly", "pib fact check",
@@ -137,6 +125,9 @@ def evaluate_source_authority(source_name):
         return {"tier": 2, "tier_label": "Tier 2: General News Publisher", "badge_color": "#38bdf8"}
     return {"tier": 3, "tier_label": "Tier 3: Unverified / Social Source", "badge_color": "#fbbf24"}
 
+# ==========================================
+# SEARCH & GROUNDING ENGINE
+# ==========================================
 def extract_search_queries(text):
     clean_text = re.sub(r'[^\w\s]', ' ', text)
     sentences = [s.strip() for s in re.split(r'[.!?]\s+', text) if len(s.strip()) > 10]
@@ -203,78 +194,87 @@ def fetch_live_news_with_fallback(query):
         articles = fetch_duckduckgo_news(query)
     return articles
 
-def extract_main_words(text):
-    """
-    Extracts core nouns, proper nouns, numbers, and key content words from text,
-    filtering out stop words and general filler words.
-    """
-    stop_words = {
-        'the', 'is', 'at', 'which', 'on', 'a', 'an', 'and', 'or', 'in', 'to', 'for', 'of', 'with',
-        'that', 'this', 'it', 'from', 'by', 'as', 'are', 'was', 'were', 'been', 'be', 'have', 'has',
-        'had', 'do', 'does', 'did', 'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might',
-        'must', 'about', 'above', 'below', 'over', 'under', 'again', 'further', 'then', 'once', 'here',
-        'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most',
-        'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very',
-        'just', 'now', 'says', 'said', 'according', 'announced', 'new', 'news', 'breaking'
-    }
-    words = re.findall(r'\b[a-zA-Z0-9]+\b', text)
-    main_words = []
-    for w in words:
-        w_lower = w.lower()
-        if w_lower not in stop_words and len(w_lower) > 2:
-            main_words.append(w_lower)
-    return list(dict.fromkeys(main_words))
+# ==========================================
+# ADVANCED ENTITY & DEBUNK ANALYSIS ENGINE
+# ==========================================
+DEBUNK_KEYWORDS = [
+    'fact check', 'fact-check', 'debunk', 'fake', 'false', 'hoax', 
+    'rumour', 'rumor', 'misleading', 'busted', 'denies', 'no plan', 
+    'clarifies', 'viral claim', 'untrue', 'scam', 'fabricated'
+]
 
-def calculate_entity_and_vector_match(claim_text, articles):
-    """
-    Evaluates both key noun/main word overlap in a single article
-    and sentence-level TF-IDF vector similarity.
-    """
+STOP_WORDS = {
+    'the', 'is', 'at', 'which', 'on', 'a', 'an', 'and', 'or', 'in', 'of', 
+    'to', 'for', 'with', 'that', 'this', 'it', 'by', 'are', 'was', 'were', 
+    'been', 'has', 'have', 'had', 'will', 'would', 'could', 'should', 'next', 'month'
+}
+
+def extract_key_terms(text):
+    clean = re.sub(r'[^\w\s]', '', text.lower())
+    words = [w for w in clean.split() if len(w) > 2 and w not in STOP_WORDS]
+    return set(words)
+
+def analyze_search_results_against_claim(claim_text, articles):
     if not articles:
-        return 0.0, 0.0, None, [], 0
+        return {
+            'max_sim': 0.0,
+            'max_overlap': 0.0,
+            'is_debunked_by_news': False,
+            'best_match': None,
+            'debunk_headline': None
+        }
 
-    sentences = [s.strip() for s in re.split(r'[.!?]\s+', claim_text) if len(s.strip()) > 10]
-    if not sentences:
-        sentences = [claim_text]
+    claim_terms = extract_key_terms(claim_text)
+    if not claim_terms:
+        claim_terms = set(claim_text.lower().split())
 
     max_sim = 0.0
-    max_overlap_ratio = 0.0
+    max_overlap = 0.0
     best_match = articles[0]
-    best_matched_words = []
-    total_main_words_count = 0
+    is_debunked_by_news = False
+    debunk_headline = None
 
-    for sentence in sentences:
-        main_words = extract_main_words(sentence)
-        if not main_words:
-            continue
+    snippets = [a['snippet'] for a in articles]
+
+    # Calculate TF-IDF Cosine Similarity
+    try:
+        corpus = [claim_text] + snippets
+        vectorizer = TfidfVectorizer(stop_words='english').fit_transform(corpus)
+        vectors = vectorizer.toarray()
+        sim_scores = cosine_similarity(vectors[0:1], vectors[1:])[0]
+    except Exception:
+        sim_scores = [0.0] * len(articles)
+
+    for idx, article in enumerate(articles):
+        title_lower = article['title'].lower()
+        snippet_terms = extract_key_terms(article['snippet'])
         
-        total_main_words_count = max(total_main_words_count, len(main_words))
+        # Calculate Noun/Term Overlap Ratio
+        overlap_count = len(claim_terms.intersection(snippet_terms))
+        overlap_ratio = overlap_count / max(len(claim_terms), 1)
 
-        for article in articles:
-            snippet_text = article['snippet'].lower()
-            # Check how many main words/nouns from sentence appear in THIS single article
-            matched_words = [w for w in main_words if w in snippet_text]
-            overlap_ratio = len(matched_words) / len(main_words) if main_words else 0.0
+        sim_score = float(sim_scores[idx]) if idx < len(sim_scores) else 0.0
 
-            # Compute TF-IDF vector similarity for this sentence vs article snippet
-            try:
-                vectorizer = TfidfVectorizer(stop_words='english').fit_transform([sentence, article['snippet']])
-                vectors = vectorizer.toarray()
-                sim_score = float(cosine_similarity(vectors[0:1], vectors[1:2])[0][0])
-            except Exception:
-                sim_score = 0.0
+        if sim_score > max_sim:
+            max_sim = sim_score
+            best_match = article
 
-            # Weight overlap higher for matching headlines
-            combined_score = (overlap_ratio * 0.7) + (sim_score * 0.3)
-            best_combined = (max_overlap_ratio * 0.7) + (max_sim * 0.3)
+        if overlap_ratio > max_overlap:
+            max_overlap = overlap_ratio
 
-            if combined_score > best_combined:
-                max_overlap_ratio = overlap_ratio
-                max_sim = sim_score
-                best_match = article
-                best_matched_words = matched_words
+        # Check if news article title explicitly debunks this claim
+        has_debunk_kw = any(dkw in title_lower for dkw in DEBUNK_KEYWORDS)
+        if has_debunk_kw and overlap_ratio >= 0.35:
+            is_debunked_by_news = True
+            debunk_headline = article['title']
 
-    return float(max_overlap_ratio), float(max_sim), best_match, best_matched_words, total_main_words_count
+    return {
+        'max_sim': max_sim,
+        'max_overlap': max_overlap,
+        'is_debunked_by_news': is_debunked_by_news,
+        'best_match': best_match,
+        'debunk_headline': debunk_headline
+    }
 
 def analyze_linguistic_risk(text):
     caps_ratio = sum(1 for c in text if c.isupper()) / max(len(text), 1)
@@ -291,6 +291,9 @@ def analyze_linguistic_risk(text):
     
     return sensationalism_score, journalistic_score
 
+# ==========================================
+# SIDEBAR NAVIGATION
+# ==========================================
 with st.sidebar:
     st.markdown("<h2 style='color:#34d399; margin-bottom:0;'>🛡️ VeriFact AI</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color:#94a3b8; font-size:0.8rem;'>Misinformation Command Center</p>", unsafe_allow_html=True)
@@ -314,9 +317,15 @@ with st.sidebar:
     st.divider()
     st.caption(f"Active Feedback Memory: **{len(st.session_state.feedback_dataset)} Samples**")
 
+# ==========================================
+# HEADER DISPLAY
+# ==========================================
 st.markdown("<h1 style='color:#f8fafc; margin-bottom:5px;'>VeriFact AI Command Center</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color:#94a3b8;'>Real-Time Live Web Grounding & Media Authenticator Engine</p>", unsafe_allow_html=True)
 
+# ==========================================
+# PIPELINE 1: TEXT / ARTICLE FACT CHECKER
+# ==========================================
 if analysis_mode == "📰 Text / Article Fact-Checker":
     
     user_input = st.text_area(
@@ -331,16 +340,15 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
         run_btn = st.button("🔍 Run Deep Fact Check", type="primary", use_container_width=True)
         
     if run_btn and user_input.strip():
-        with st.spinner("Analyzing claim nouns/entities, querying live news feeds & validating single-article word match..."):
+        with st.spinner("Fetching live news feeds & running debunk/corroboration analysis..."):
             
-            # Step 1: Query Extraction & Multi-Source Search
+            # Step 1: Query Extraction & Search
             queries = extract_search_queries(user_input)
             all_articles = []
             for q in queries:
                 fetched = fetch_live_news_with_fallback(q)
                 all_articles.extend(fetched)
                 
-            # Deduplicate Articles
             seen = set()
             unique_articles = []
             for a in all_articles:
@@ -348,39 +356,47 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     seen.add(a['title'])
                     unique_articles.append(a)
                     
-            # Step 2: Single-Article Noun/Main Word Overlap Engine
-            overlap_ratio, raw_max_sim, best_match, matched_words, total_words = calculate_entity_and_vector_match(user_input, unique_articles)
-            corroboration_pct = int(overlap_ratio * 100)
+            # Step 2: Advanced Grounding & Debunk Analysis
+            analysis = analyze_search_results_against_claim(user_input, unique_articles)
+            raw_max_sim = analysis['max_sim']
+            max_overlap = analysis['max_overlap']
+            is_debunked_by_news = analysis['is_debunked_by_news']
+            best_match = analysis['best_match']
+            debunk_headline = analysis['debunk_headline']
             
-            # Step 3: Linguistic Risk Scanner
+            # Step 3: Linguistic Analysis
             sensationalism_score, journalistic_score = analyze_linguistic_risk(user_input)
             
-            # Step 4: Re-calibrated Decision Matrix
-            # RSS headlines are concise (6-10 words), so 30%+ word overlap or 0.12+ vector similarity indicates real news coverage
-            if overlap_ratio >= 0.30 or raw_max_sim >= 0.12 or (overlap_ratio >= 0.20 and journalistic_score >= 20):
-                verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
-                status_class = "badge-real"
-                truth_index = min(int(max(overlap_ratio, raw_max_sim) * 100 + 40), 98)
-                summary = f"Matches live coverage from '{best_match['source'] if best_match else 'Global News'}'. Key claim nouns ({len(matched_words)} matched) confirmed in live news reports."
-            elif sensationalism_score >= 40 and overlap_ratio < 0.25:
+            corroboration_pct = int(max(raw_max_sim, max_overlap) * 100)
+
+            # Step 4: Refined Precision Decision Tree
+            if is_debunked_by_news:
                 verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
                 status_class = "badge-fake"
-                truth_index = max(100 - sensationalism_score, 10)
-                summary = "Exhibits heavy clickbait language and key claim nouns failed to match together in verified news reports."
+                truth_index = 10
+                summary = f"Flagged as a debunked rumor by news fact-checkers. Reference: '{debunk_headline}'"
+            elif sensationalism_score >= 45:
+                verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
+                status_class = "badge-fake"
+                truth_index = max(100 - sensationalism_score, 15)
+                summary = "Contains strong sensationalism/clickbait indicators and lacks verified news grounding."
+            elif (max_overlap >= 0.50 or raw_max_sim >= 0.28) and not is_debunked_by_news:
+                verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
+                status_class = "badge-real"
+                truth_index = max(corroboration_pct, 85)
+                summary = f"Corroborated by live news reports from '{best_match['source'] if best_match else 'Global News'}'. Strong entity and contextual alignment."
             else:
                 verdict = "⚠️ UNVERIFIED / PROBABLE FAKE NEWS"
                 status_class = "badge-warning"
                 truth_index = 35
-                summary = f"Key nouns/main terms were not found together in any single verified live news report ({len(matched_words)}/{total_words} words matched)."
+                summary = "No affirmative reporting found on verified live news feeds matching this specific claim."
                 
-            # Store Last Analyzed Claim for Active Learning Pipeline
             st.session_state.last_analyzed_claim = {
                 'type': 'Text Claim',
                 'content': user_input,
                 'predicted_verdict': verdict
             }
 
-            # Log Session History
             st.session_state.verification_history.append({
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'claim': user_input[:60] + "...",
@@ -389,7 +405,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                 'corroboration': f"{corroboration_pct}%"
             })
             
-            # Dashboard Verdict Header
+            # Dashboard Display
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown(f"""
             <div class="command-card">
@@ -403,16 +419,15 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
             </div>
             """, unsafe_allow_html=True)
             
-            # Metric Columns
             m1, m2, m3, m4 = st.columns(4)
             with m1:
                 st.markdown(f"""<div class="metric-box"><div class="metric-value">{truth_index}%</div><div class="metric-label">Truth Index</div></div>""", unsafe_allow_html=True)
             with m2:
-                st.markdown(f"""<div class="metric-box"><div class="metric-value">{corroboration_pct}%</div><div class="metric-label">Single Article Match</div></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div class="metric-box"><div class="metric-value">{corroboration_pct}%</div><div class="metric-label">Web Grounding</div></div>""", unsafe_allow_html=True)
             with m3:
                 st.markdown(f"""<div class="metric-box"><div class="metric-value">{journalistic_score}%</div><div class="metric-label">Journalistic Tone</div></div>""", unsafe_allow_html=True)
             with m4:
-                st.markdown(f"""<div class="metric-box"><div class="metric-value">{sensationalism_score}%</div><div class="metric-label">Sensationalism Score</div></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div class="metric-box"><div class="metric-value">{sensationalism_score}%</div><div class="metric-label">Sensationalism Risk</div></div>""", unsafe_allow_html=True)
                 
             st.markdown("<br>", unsafe_allow_html=True)
             
@@ -425,7 +440,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
 *Claim:* "{user_input[:100]}..."
 *Verdict:* {verdict}
 *Truth Index:* {truth_index}%
-*Single Article Word Overlap:* {corroboration_pct}%
+*Web Corroboration:* {corroboration_pct}%
 
 *Summary:* {summary}
 *Verified via VeriFact AI Command Center*"""
@@ -451,15 +466,17 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     
             with tab3:
                 st.json({
-                    "single_article_word_overlap_ratio": overlap_ratio,
-                    "matched_key_words": matched_words,
-                    "total_key_words": total_words,
-                    "vector_cosine_similarity": raw_max_sim,
+                    "raw_vector_similarity": raw_max_sim,
+                    "term_overlap_ratio": max_overlap,
+                    "is_debunked_by_news": is_debunked_by_news,
                     "sensationalism_score": sensationalism_score,
-                    "extracted_queries": queries,
-                    "duckduckgo_fallback_enabled": HAS_DDG
+                    "journalistic_score": journalistic_score,
+                    "extracted_queries": queries
                 })
 
+# ==========================================
+# PIPELINE 2: IMAGE & VIDEO AUTHENTICATOR
+# ==========================================
 elif analysis_mode == "📷 Image & Video Authenticator":
     st.markdown("### 📷 Image & Video Authenticator Engine")
     st.markdown("Upload a video (`.mp4`, `.mov`) or news screenshot (`.jpg`, `.png`) to evaluate authenticity against deepfake signals, synthetic audio, and live news grounding.")
@@ -487,8 +504,8 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                     if media_context.strip():
                         q = extract_search_queries(media_context)[0]
                         articles = fetch_live_news_with_fallback(q)
-                        overlap, sim, _, _, _ = calculate_entity_and_vector_match(media_context, articles)
-                        if overlap >= 0.50 or sim >= 0.15:
+                        analysis = analyze_search_results_against_claim(media_context, articles)
+                        if (analysis['max_overlap'] >= 0.45 or analysis['max_sim'] >= 0.25) and not analysis['is_debunked_by_news']:
                             corroborated = True
 
                     filename = uploaded_media.name.lower()
@@ -547,6 +564,9 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                     with m3:
                         st.markdown(f"""<div class="metric-box"><div class="metric-value">{"HIGH" if corroborated else "LOW"}</div><div class="metric-label">Live Corroboration</div></div>""", unsafe_allow_html=True)
 
+# ==========================================
+# PIPELINE 3: MODEL FEEDBACK & ACTIVE LEARNING HUB
+# ==========================================
 else:
     st.markdown("### 🧠 Model Feedback & Active Learning Hub")
     st.markdown("Provide feedback on predictions, submit ground-truth corrections, and retrain the model memory to improve prediction accuracy.")
@@ -638,6 +658,9 @@ else:
     else:
         st.info("No feedback samples recorded yet.")
 
+# ==========================================
+# SESSION AUDIT HISTORY & CSV EXPORT
+# ==========================================
 st.divider()
 if st.session_state.verification_history:
     st.markdown("### 📜 Session Verification Audit Log")
