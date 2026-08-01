@@ -972,7 +972,7 @@ else:
                     "Sources Found": len(result['sources'])
                 })
 
-elif st.session_state.verification_history:
+if st.session_state.verification_history:
     st.markdown("---")
     st.markdown("### 📜 Session Verification Audit Log")
     history_df = pd.DataFrame(st.session_state.verification_history)
