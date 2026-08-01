@@ -16,9 +16,6 @@ try:
 except ImportError:
     HAS_DDG = False
 
-# ==========================================
-# PAGE CONFIGURATION & DARK THEME CSS
-# ==========================================
 st.set_page_config(
     page_title="VeriFact AI — Misinformation Command Center",
     page_icon="🛡️",
@@ -100,7 +97,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize Session State Variables
 if 'verification_history' not in st.session_state:
     st.session_state.verification_history = []
 
@@ -127,9 +123,6 @@ if 'feedback_dataset' not in st.session_state:
 if 'last_analyzed_claim' not in st.session_state:
     st.session_state.last_analyzed_claim = None
 
-# ==========================================
-# SOURCE CREDIBILITY DATABASE
-# ==========================================
 TIER1_SOURCES = [
     "pib", "reuters", "bbc", "the hindu", "indian express", "ndtv", 
     "times of india", "altnews", "boomlive", "factly", "pib fact check",
@@ -145,9 +138,6 @@ def evaluate_source_authority(source_name):
         return {"tier": 2, "tier_label": "Tier 2: General News Publisher", "badge_color": "#38bdf8"}
     return {"tier": 3, "tier_label": "Tier 3: Unverified / Social Source", "badge_color": "#fbbf24"}
 
-# ==========================================
-# MULTI-TIER WEB SEARCH ENGINE (RSS + DDG FALLBACK)
-# ==========================================
 def extract_search_queries(text):
     clean_text = re.sub(r'[^\w\s]', ' ', text)
     sentences = [s.strip() for s in re.split(r'[.!?]\s+', text) if len(s.strip()) > 10]
@@ -214,9 +204,6 @@ def fetch_live_news_with_fallback(query):
         articles = fetch_duckduckgo_news(query)
     return articles
 
-# ==========================================
-# SENTENCE-LEVEL TF-IDF MATCHING
-# ==========================================
 def calculate_sentence_similarity(claim_text, articles):
     if not articles:
         return 0.0, None
@@ -247,9 +234,6 @@ def calculate_sentence_similarity(claim_text, articles):
             
     return float(max_sim), best_match
 
-# ==========================================
-# LINGUISTIC ANALYSIS
-# ==========================================
 def analyze_linguistic_risk(text):
     caps_ratio = sum(1 for c in text if c.isupper()) / max(len(text), 1)
     excl_count = text.count('!')
@@ -265,9 +249,6 @@ def analyze_linguistic_risk(text):
     
     return sensationalism_score, journalistic_score
 
-# ==========================================
-# SIDEBAR NAVIGATION & SETTINGS
-# ==========================================
 with st.sidebar:
     st.markdown("<h2 style='color:#34d399; margin-bottom:0;'>🛡️ VeriFact AI</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color:#94a3b8; font-size:0.8rem;'>Misinformation Command Center</p>", unsafe_allow_html=True)
@@ -291,15 +272,9 @@ with st.sidebar:
     st.divider()
     st.caption(f"Active Feedback Memory: **{len(st.session_state.feedback_dataset)} Samples**")
 
-# ==========================================
-# HEADER DISPLAY
-# ==========================================
 st.markdown("<h1 style='color:#f8fafc; margin-bottom:5px;'>VeriFact AI Command Center</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color:#94a3b8;'>Real-Time Live Web Grounding & Media Authenticator Engine</p>", unsafe_allow_html=True)
 
-# ==========================================
-# PIPELINE 1: TEXT / ARTICLE FACT CHECKER
-# ==========================================
 if analysis_mode == "📰 Text / Article Fact-Checker":
     
     user_input = st.text_area(
@@ -333,27 +308,32 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     
             # Step 2: Vector Similarity Calculation
             raw_max_sim, best_match = calculate_sentence_similarity(user_input, unique_articles)
-            corroboration_pct = min(int(raw_max_sim * 250), 100) if raw_max_sim >= 0.08 else min(int(raw_max_sim * 100), 20)
+            corroboration_pct = min(int(raw_max_sim * 250), 100) if raw_max_sim >= 0.08 else min(int(raw_max_sim * 100), 15)
             
             # Step 3: Linguistic Risk Scanner
             sensationalism_score, journalistic_score = analyze_linguistic_risk(user_input)
             
-            # Step 4: Restored Original Decision Logic
-            if corroboration_pct >= 20 or raw_max_sim >= 0.10:
+            # Step 4: Strict Decision Matrix (Prevents False Real News Over-Classification)
+            if raw_max_sim >= 0.20 and sensationalism_score < 50:
                 verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
                 status_class = "badge-real"
-                truth_index = max(corroboration_pct, 80)
-                summary = f"Matches live coverage from '{best_match['source'] if best_match else 'Global News'}'. High textual alignment detected."
+                truth_index = min(max(corroboration_pct, 75), 98)
+                summary = f"Matches live news coverage from '{best_match['source'] if best_match else 'Global News'}'. High textual alignment."
             elif sensationalism_score >= 40:
                 verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
                 status_class = "badge-fake"
                 truth_index = max(100 - sensationalism_score, 10)
-                summary = "Exhibits heavy emotional clickbait indicators and lacks grounding across verified news outlets."
+                summary = "Exhibits heavy emotional clickbait indicators and lacks sufficient grounding across verified news outlets."
+            elif raw_max_sim >= 0.12:
+                verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
+                status_class = "badge-real"
+                truth_index = max(corroboration_pct, 65)
+                summary = f"Corroborated by reports from '{best_match['source'] if best_match else 'News Outlets'}'."
             else:
                 verdict = "⚠️ UNVERIFIED / PROBABLE FAKE NEWS"
                 status_class = "badge-warning"
                 truth_index = 35
-                summary = "Formal phrasing detected, but no corroborating reports found on live news feeds."
+                summary = "No strong corroborating reports found on live news feeds."
                 
             # Store Last Analyzed Claim for Active Learning Pipeline
             st.session_state.last_analyzed_claim = {
@@ -371,7 +351,6 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                 'corroboration': f"{corroboration_pct}%"
             })
             
-            # Dashboard Verdict Header
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown(f"""
             <div class="command-card">
@@ -441,9 +420,6 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     "duckduckgo_fallback_enabled": HAS_DDG
                 })
 
-# ==========================================
-# PIPELINE 2: IMAGE & VIDEO AUTHENTICATOR
-# ==========================================
 elif analysis_mode == "📷 Image & Video Authenticator":
     st.markdown("### 📷 Image & Video Authenticator Engine")
     st.markdown("Upload a video (`.mp4`, `.mov`) or news screenshot (`.jpg`, `.png`) to evaluate authenticity against deepfake signals, synthetic audio, and live news grounding.")
@@ -534,9 +510,6 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                     with m3:
                         st.markdown(f"""<div class="metric-box"><div class="metric-value">{"HIGH" if corroborated else "LOW"}</div><div class="metric-label">Live Corroboration</div></div>""", unsafe_allow_html=True)
 
-# ==========================================
-# PIPELINE 3: MODEL FEEDBACK & ACTIVE LEARNING HUB
-# ==========================================
 else:
     st.markdown("### 🧠 Model Feedback & Active Learning Hub")
     st.markdown("Provide feedback on predictions, submit ground-truth corrections, and retrain the model memory to improve prediction accuracy.")
@@ -629,9 +602,6 @@ else:
     else:
         st.info("No feedback samples recorded yet.")
 
-# ==========================================
-# SESSION AUDIT HISTORY & CSV EXPORT
-# ==========================================
 st.divider()
 if st.session_state.verification_history:
     st.markdown("### 📜 Session Verification Audit Log")
