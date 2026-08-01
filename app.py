@@ -264,7 +264,11 @@ def calculate_entity_and_vector_match(claim_text, articles):
             except Exception:
                 sim_score = 0.0
 
-            if overlap_ratio > max_overlap_ratio or (overlap_ratio == max_overlap_ratio and sim_score > max_sim):
+            # Weight overlap higher for matching headlines
+            combined_score = (overlap_ratio * 0.7) + (sim_score * 0.3)
+            best_combined = (max_overlap_ratio * 0.7) + (max_sim * 0.3)
+
+            if combined_score > best_combined:
                 max_overlap_ratio = overlap_ratio
                 max_sim = sim_score
                 best_match = article
@@ -351,13 +355,14 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
             # Step 3: Linguistic Risk Scanner
             sensationalism_score, journalistic_score = analyze_linguistic_risk(user_input)
             
-            # Step 4: Decision Tree Based on Single-Article Main Word Overlap
-            if overlap_ratio >= 0.60 or (overlap_ratio >= 0.40 and raw_max_sim >= 0.15):
+            # Step 4: Re-calibrated Decision Matrix
+            # RSS headlines are concise (6-10 words), so 30%+ word overlap or 0.12+ vector similarity indicates real news coverage
+            if overlap_ratio >= 0.30 or raw_max_sim >= 0.12 or (overlap_ratio >= 0.20 and journalistic_score >= 20):
                 verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
                 status_class = "badge-real"
-                truth_index = min(int(overlap_ratio * 80 + 20), 98)
-                summary = f"Matches live coverage from '{best_match['source'] if best_match else 'Global News'}'. {len(matched_words)}/{total_words} main nouns/key terms matched in a single article."
-            elif sensationalism_score >= 40:
+                truth_index = min(int(max(overlap_ratio, raw_max_sim) * 100 + 40), 98)
+                summary = f"Matches live coverage from '{best_match['source'] if best_match else 'Global News'}'. Key claim nouns ({len(matched_words)} matched) confirmed in live news reports."
+            elif sensationalism_score >= 40 and overlap_ratio < 0.25:
                 verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
                 status_class = "badge-fake"
                 truth_index = max(100 - sensationalism_score, 10)
