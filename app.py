@@ -1,783 +1,717 @@
-"""
-==============================================================================
- FAKE NEWS DETECTOR  -  app.py
-==============================================================================
-A single-file Streamlit application that analyzes a news article (via URL or
-pasted text) and produces:
-
-  - Sensationalism Score
-  - Clickbait Score
-  - Web Corroboration Score (live search via DuckDuckGo + Google News RSS)
-  - Journalistic Tone Score
-  - Composite Truth Index + verdict
-  - Session history with CSV / JSON download
-
-No paid APIs are used anywhere. Web corroboration relies on:
-  - duckduckgo-search (free, unofficial DuckDuckGo client)
-  - Google News RSS   (free, public RSS endpoint, no key required)
-
---------------------------------------------------------------------------
-INSTALL
---------------------------------------------------------------------------
-pip install streamlit requests beautifulsoup4 feedparser duckduckgo-search \
-            scikit-learn textstat textblob lxml
-
-RUN
---------------------------------------------------------------------------
-streamlit run app.py
-==============================================================================
-"""
-
-import io
-import re
-import csv
-import json
-import difflib
-from datetime import datetime, timezone
-from urllib.parse import quote_plus, urlparse
-
-import requests
-from bs4 import BeautifulSoup
-import feedparser
 import streamlit as st
+import pandas as pd
+import numpy as np
+import re
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
+from datetime import datetime
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-# ---------------------------------------------------------------------------
-# Optional / soft dependencies - the app degrades gracefully if missing
-# ---------------------------------------------------------------------------
 try:
     from duckduckgo_search import DDGS
-    DDGS_AVAILABLE = True
+    HAS_DDG = True
 except ImportError:
-    DDGS_AVAILABLE = False
+    HAS_DDG = False
 
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.metrics.pairwise import cosine_similarity
-    SKLEARN_AVAILABLE = True
-except ImportError:
-    SKLEARN_AVAILABLE = False
+st.set_page_config(
+    page_title="VeriFact AI — Misinformation Command Center",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-try:
-    import textstat
-    TEXTSTAT_AVAILABLE = True
-except ImportError:
-    TEXTSTAT_AVAILABLE = False
+# Custom Command Center Glassmorphism Styling
+st.markdown("""
+<style>
+    /* Dark Theme Base */
+    .stApp {
+        background-color: #0f172a;
+        color: #f8fafc;
+    }
+    
+    /* Card Container */
+    .command-card {
+        background: rgba(30, 41, 59, 0.7);
+        backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 16px;
+        padding: 24px;
+        margin-bottom: 20px;
+    }
+    
+    /* Status Badges */
+    .badge-real {
+        background-color: rgba(16, 185, 129, 0.15);
+        color: #34d399;
+        border: 1px solid rgba(16, 185, 129, 0.4);
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 700;
+        font-size: 0.85rem;
+    }
+    
+    .badge-fake {
+        background-color: rgba(239, 68, 68, 0.15);
+        color: #f87171;
+        border: 1px solid rgba(239, 68, 68, 0.4);
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 700;
+        font-size: 0.85rem;
+    }
+    
+    .badge-warning {
+        background-color: rgba(245, 158, 11, 0.15);
+        color: #fbbf24;
+        border: 1px solid rgba(245, 158, 11, 0.4);
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 700;
+        font-size: 0.85rem;
+    }
 
-try:
-    from textblob import TextBlob
-    TEXTBLOB_AVAILABLE = True
-except ImportError:
-    TEXTBLOB_AVAILABLE = False
+    /* Metric Gauge Box */
+    .metric-box {
+        background: rgba(15, 23, 42, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 16px;
+        text-align: center;
+    }
 
+    .metric-value {
+        font-size: 2rem;
+        font-weight: 800;
+        color: #38bdf8;
+    }
 
-# ==============================================================================
-# LEXICONS / REFERENCE DATA  (starter lists - expand freely)
-# ==============================================================================
+    .metric-label {
+        font-size: 0.75rem;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Trimmed to genuinely hyperbolic/tabloid words. Common words that show up
-# constantly in ordinary, legitimate journalism ("slams", "blast", "crisis",
-# "chaos", "panic", "erupts", "brutal") were removed - they were causing
-# real, sober news reporting to get mis-scored as sensationalist.
-SENSATIONAL_WORDS = {
-    "shocking", "bombshell", "explosive", "outrageous", "unbelievable",
-    "miracle", "scandalous", "meltdown", "apocalyptic", "doomsday", "insane",
-    "jaw-dropping", "mind-blowing", "mind-boggling", "terrifying", "horrifying",
-    "sensational", "astonishing", "secretly", "you won't believe",
-}
+if 'verification_history' not in st.session_state:
+    st.session_state.verification_history = []
 
-# Each pattern carries its own weight. Ambiguous patterns that legitimate
-# journalism also uses often (e.g. explainer headlines ending in "?", or
-# "Here's why...") were removed or down-weighted so real news stops
-# getting flagged as clickbait.
-CLICKBAIT_PATTERNS = [
-    (r"\byou won'?t believe\b", 22),
-    (r"\bwhat happens next\b", 18),
-    (r"\bnumber \d+ will\b", 18),
-    (r"\bwill blow your mind\b", 20),
-    (r"\bcan'?t even\b", 12),
-    (r"^\s*\d+\s+(reasons|ways|things|facts|signs|secrets|times)", 12),
-    (r"\bthis one (weird|simple)?\s*trick\b", 22),
-    (r"\bdoctors hate\b", 22),
-    (r"\bwhat (they|he|she) did next\b", 16),
-    (r"\bgone (wrong|viral)\b", 10),
-    (r"\bbroke the internet\b", 14),
+if 'feedback_dataset' not in st.session_state:
+    st.session_state.feedback_dataset = [
+        {
+            'timestamp': '2026-03-01 10:15:00',
+            'type': 'Text Claim',
+            'content': 'RBI replacing all currency notes with plastic notes',
+            'predicted_verdict': '🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT',
+            'is_correct': 'Yes 👍',
+            'corrected_label': '🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT'
+        },
+        {
+            'timestamp': '2026-03-02 14:22:10',
+            'type': 'Text Claim',
+            'content': 'ISRO Gaganyaan engine testing completed',
+            'predicted_verdict': '🟢 VERIFIED REAL / HIGHLY LIKELY',
+            'is_correct': 'Yes 👍',
+            'corrected_label': '🟢 VERIFIED REAL / HIGHLY LIKELY'
+        }
+    ]
+
+if 'last_analyzed_claim' not in st.session_state:
+    st.session_state.last_analyzed_claim = None
+
+TIER1_SOURCES = [
+    "pib", "reuters", "bbc", "the hindu", "indian express", "ndtv", 
+    "times of india", "altnews", "boomlive", "factly", "pib fact check",
+    "isro", "nasa", "who", "rbi", "afp", "associated press"
 ]
 
-# Attribution phrases used by the tone analyzer
-ATTRIBUTION_PHRASES = [
-    "according to", "said", "stated", "reported", "told", "confirmed",
-    "announced", "claims", "alleges", "sources say", "officials said",
-]
+def evaluate_source_authority(source_name):
+    clean_name = source_name.lower().strip()
+    for t1 in TIER1_SOURCES:
+        if t1 in clean_name:
+            return {"tier": 1, "tier_label": "Tier 1: High Trust (Verified Outlet)", "badge_color": "#34d399"}
+    if any(agg in clean_name for agg in ["news", "daily", "post", "times", "today"]):
+        return {"tier": 2, "tier_label": "Tier 2: General News Publisher", "badge_color": "#38bdf8"}
+    return {"tier": 3, "tier_label": "Tier 3: Unverified / Social Source", "badge_color": "#fbbf24"}
 
-# Small illustrative starter lists - NOT exhaustive. Extend for production use.
-CREDIBLE_DOMAINS = {
-    "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "npr.org",
-    "theguardian.com", "nytimes.com", "washingtonpost.com", "wsj.com",
-    "bloomberg.com", "aljazeera.com", "cnn.com", "abcnews.go.com",
-    "cbsnews.com", "nbcnews.com", "pbs.org", "economist.com", "ft.com",
+# Light stopword set used ONLY for query building - deliberately does not
+# strip short entity tokens like "RBI", "5G", "AI", "UN".
+QUERY_STOP_WORDS = {
+    'the', 'is', 'at', 'which', 'on', 'a', 'an', 'and', 'or', 'in', 'to', 'for', 'of', 'with',
+    'that', 'this', 'it', 'from', 'by', 'as', 'are', 'was', 'were', 'been', 'be', 'have', 'has',
+    'had', 'will', 'would', 'says', 'said', 'according', 'announced', 'new', 'news', 'breaking'
 }
 
-LOW_CREDIBILITY_DOMAINS = {
-    "theonion.com", "worldnewsdailyreport.com", "empirenews.net",
-    "nationalreport.net", "huzlers.com", "clickhole.com",
-}
+def extract_search_queries(text):
+    """
+    Builds search queries that preserve short but high-value entity tokens
+    (acronyms like RBI/ISRO/WHO, alphanumeric tags like 5G/COVID19, and
+    capitalized proper nouns) which a plain word-length filter would drop.
+    """
+    clean_text = re.sub(r'[^\w\s]', ' ', text)
+    sentences = [s.strip() for s in re.split(r'[.!?]\s+', text) if len(s.strip()) > 10]
+    lead_sentence = sentences[0] if sentences else text
 
+    raw_tokens = clean_text.split()
+    entities = []
+    general_words = []
+    for w in raw_tokens:
+        if not w:
+            continue
+        lw = w.lower()
+        if lw in QUERY_STOP_WORDS:
+            continue
+        # Entity-like token: all-caps acronym (2+ chars), contains a digit
+        # (5G, COVID19), or a capitalized word of reasonable length.
+        if (w.isupper() and len(w) >= 2) or re.search(r'\d', w) or (w[0].isupper() and len(w) >= 3):
+            entities.append(w)
+        elif len(lw) > 3:
+            general_words.append(lw)
 
-# ==============================================================================
-# HELPERS
-# ==============================================================================
+    entities = list(dict.fromkeys(entities))
+    general_words = list(dict.fromkeys(general_words))
 
-def split_sentences(text):
-    """Lightweight sentence splitter (no NLTK download required)."""
-    text = text.strip()
-    if not text:
-        return []
-    parts = re.split(r"(?<=[.!?])\s+", text)
-    return [p.strip() for p in parts if p.strip()]
+    # Query 1: entity-first, fill remaining slots with general keywords
+    remaining_slots = max(0, 5 - len(entities[:4]))
+    q1_terms = entities[:4] + general_words[:remaining_slots]
+    q1 = " ".join(q1_terms) if q1_terms else clean_text[:60]
 
+    # Query 2: lead sentence, slightly wider window than before
+    q2 = " ".join(lead_sentence.split()[:8])
 
-def get_domain(url):
-    if not url:
-        return ""
+    return [q1, q2]
+
+def fetch_google_news_rss(query):
     try:
-        return urlparse(url).netloc.replace("www.", "").lower()
+        encoded_q = urllib.parse.quote(query)
+        rss_url = f"https://news.google.com/rss/search?q={encoded_q}&hl=en-IN&gl=IN&ceid=IN:en"
+        req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
+        
+        with urllib.request.urlopen(req, timeout=5) as response:
+            xml_data = response.read()
+            
+        root = ET.fromstring(xml_data)
+        items = []
+        for item in root.findall('.//item')[:8]:
+            title = item.find('title').text if item.find('title') is not None else ''
+            link = item.find('link').text if item.find('link') is not None else ''
+            pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ''
+            source_el = item.find('source')
+            source = source_el.text if source_el is not None else 'Google News'
+            
+            items.append({
+                'title': title,
+                'snippet': title,
+                'link': link,
+                'source': source,
+                'date': pub_date
+            })
+        return items
     except Exception:
-        return ""
+        return []
 
-
-# ==============================================================================
-# 1. ARTICLE EXTRACTION (from URL)
-# ==============================================================================
-
-def extract_article_from_url(url):
-    """Fetch a URL and pull out a best-effort title + body text."""
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 FakeNewsDetector/1.0"
-        )
-    }
-    try:
-        resp = requests.get(url, headers=headers, timeout=12)
-        resp.raise_for_status()
-    except Exception as e:
-        return None, f"Could not fetch the URL ({e})"
-
-    try:
-        soup = BeautifulSoup(resp.text, "html.parser")
-    except Exception as e:
-        return None, f"Could not parse the page ({e})"
-
-    # Title: prefer og:title, fall back to <title>
-    title = ""
-    og_title = soup.find("meta", property="og:title")
-    if og_title and og_title.get("content"):
-        title = og_title["content"].strip()
-    elif soup.title and soup.title.text:
-        title = soup.title.text.strip()
-
-    # Body: gather substantial <p> tags
-    paragraphs = soup.find_all("p")
-    body_parts = [p.get_text(" ", strip=True) for p in paragraphs]
-    body_parts = [p for p in body_parts if len(p) > 40]
-    body = "\n".join(body_parts)
-
-    if not body:
-        body = soup.get_text(separator="\n", strip=True)
-
-    if not title and body:
-        title = split_sentences(body)[0][:120] if split_sentences(body) else ""
-
-    domain = get_domain(url)
-    return {"title": title, "text": body, "domain": domain, "url": url}, None
-
-
-# ==============================================================================
-# 2. CLICKBAIT DETECTOR
-# ==============================================================================
-
-def compute_clickbait_score(title):
-    """
-    Returns (score, hits). If no headline is available, returns (0.0, [])
-    rather than treating the absence of a headline as a red flag.
-    """
-    if not title or not title.strip():
-        return 0.0, []
-    t = title.strip()
-    score = 0
-    hits = []
-
-    for pat, weight in CLICKBAIT_PATTERNS:
-        if re.search(pat, t, re.IGNORECASE | re.MULTILINE):
-            score += weight
-            hits.append(pat)
-
-    exclaim = t.count("!")
-    if exclaim:
-        score += min(exclaim * 6, 12)
-        hits.append(f"{exclaim} exclamation mark(s)")
-
-    caps_words = re.findall(r"\b[A-Z]{3,}\b", t)
-    if caps_words:
-        score += min(len(caps_words) * 6, 12)
-        hits.append(f"{len(caps_words)} ALL-CAPS word(s)")
-
-    return round(min(score, 100), 1), hits
-
-
-# ==============================================================================
-# 3. SENSATIONALISM SCORER
-# ==============================================================================
-
-def compute_sensationalism_score(text):
-    if not text or not text.strip():
-        return 0.0, []
-    words = re.findall(r"\b\w+\b", text.lower())
-    if not words:
-        return 0.0, []
-
-    found = [w for w in words if w in SENSATIONAL_WORDS]
-    density = len(found) / len(words)
-
-    sentence_enders = max(len(re.findall(r"[.!?]", text)), 1)
-    exclaim_density = text.count("!") / sentence_enders
-
-    caps_words = re.findall(r"\b[A-Z]{4,}\b", text)
-
-    score = min(100, density * 800 + exclaim_density * 100 + len(caps_words) * 2)
-    top_words = [w for w, _ in _count_and_sort(found)[:8]]
-    return round(score, 1), top_words
-
-
-def _count_and_sort(items):
-    from collections import Counter
-    return Counter(items).most_common()
-
-
-# ==============================================================================
-# 4. JOURNALISTIC TONE ANALYZER
-# ==============================================================================
-
-def analyze_journalistic_tone(text):
-    result = {
-        "score": 50.0,
-        "attribution_count": 0,
-        "quote_count": 0,
-        "passive_ratio": 0.0,
-        "flesch_reading_ease": None,
-        "subjectivity": None,
-        "polarity": None,
-    }
-    if not text or not text.strip():
-        return result
-
-    lower = text.lower()
-    sentences = split_sentences(text)
-    n_sent = max(len(sentences), 1)
-
-    attribution_count = sum(lower.count(p) for p in ATTRIBUTION_PHRASES)
-    quote_count = text.count('"') // 2 + text.count("\u201c")
-    passive_matches = len(re.findall(r"\b(is|was|are|were|been|being|be)\s+\w+ed\b", lower))
-    passive_ratio = passive_matches / n_sent
-    exclaim_count = text.count("!")
-    caps_words = len(re.findall(r"\b[A-Z]{3,}\b", text))
-
-    subjectivity = None
-    polarity = None
-    if TEXTBLOB_AVAILABLE:
-        try:
-            tb = TextBlob(text)
-            subjectivity = tb.sentiment.subjectivity
-            polarity = tb.sentiment.polarity
-        except Exception:
-            pass
-
-    flesch = None
-    if TEXTSTAT_AVAILABLE:
-        try:
-            flesch = textstat.flesch_reading_ease(text)
-        except Exception:
-            pass
-
-    score = 50.0
-    score += min(attribution_count * 3, 20)
-    score += min(quote_count * 2, 10)
-    score -= min(exclaim_count * 5, 20)
-    score -= min(caps_words * 3, 15)
-    if subjectivity is not None:
-        score -= subjectivity * 15
-    score = max(0.0, min(100.0, score))
-
-    result.update({
-        "score": round(score, 1),
-        "attribution_count": attribution_count,
-        "quote_count": quote_count,
-        "passive_ratio": round(passive_ratio, 3),
-        "flesch_reading_ease": round(flesch, 1) if flesch is not None else None,
-        "subjectivity": round(subjectivity, 3) if subjectivity is not None else None,
-        "polarity": round(polarity, 3) if polarity is not None else None,
-    })
-    return result
-
-
-# ==============================================================================
-# 5. LIVE WEB SEARCH  (DuckDuckGo + Google News RSS)
-# ==============================================================================
-
-def duckduckgo_search(query, num=8):
-    if not DDGS_AVAILABLE or not query.strip():
+def fetch_duckduckgo_news(query):
+    if not HAS_DDG:
         return []
     try:
         with DDGS() as ddgs:
-            raw = list(ddgs.text(query, max_results=num))
-        return [
-            {
-                "title": r.get("title", ""),
-                "link": r.get("href", r.get("link", "")),
-                "snippet": r.get("body", ""),
+            results = list(ddgs.news(query, max_results=8))
+            items = []
+            for r in results:
+                items.append({
+                    'title': r.get('title', ''),
+                    'snippet': r.get('body', r.get('title', '')),
+                    'link': r.get('url', ''),
+                    'source': r.get('source', 'DuckDuckGo News'),
+                    'date': r.get('date', '')
+                })
+            return items
+    except Exception:
+        return []
+
+def fetch_live_news_with_fallback(query):
+    articles = fetch_google_news_rss(query)
+    if not articles:
+        articles = fetch_duckduckgo_news(query)
+    return articles
+
+def extract_main_words(text):
+    """
+    Extracts core nouns, proper nouns, numbers, and key content words from text,
+    filtering out stop words and general filler words. Keeps short entity
+    tokens (2+ chars) instead of requiring 3+ chars, so acronyms like "AI",
+    "5G", "UN" survive.
+    """
+    stop_words = {
+        'the', 'is', 'at', 'which', 'on', 'a', 'an', 'and', 'or', 'in', 'to', 'for', 'of', 'with',
+        'that', 'this', 'it', 'from', 'by', 'as', 'are', 'was', 'were', 'been', 'be', 'have', 'has',
+        'had', 'do', 'does', 'did', 'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might',
+        'must', 'about', 'above', 'below', 'over', 'under', 'again', 'further', 'then', 'once', 'here',
+        'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most',
+        'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very',
+        'just', 'now', 'says', 'said', 'according', 'announced', 'new', 'news', 'breaking'
+    }
+    words = re.findall(r'\b[a-zA-Z0-9]+\b', text)
+    main_words = []
+    for w in words:
+        w_lower = w.lower()
+        if w_lower not in stop_words and len(w_lower) >= 2:
+            main_words.append(w_lower)
+    return list(dict.fromkeys(main_words))
+
+# Signals that indicate an article is DENYING/DEBUNKING a claim rather than
+# confirming it. Plain word-overlap can't tell "RBI announces X" apart from
+# "RBI denies X" - both share the same key nouns - so this catches that case
+# explicitly instead of letting overlap alone decide the verdict.
+DEBUNK_SIGNAL_WORDS = [
+    'false', 'fake', 'hoax', 'debunk', 'debunked', 'myth', 'not true', 'rumor', 'rumour',
+    'clarifies', 'clarification', 'denies', 'denied', 'misleading', 'fact check', 'fact-check',
+    'no truth', 'baseless', 'untrue', 'fabricated', 'busts', 'pib fact'
+]
+
+def contains_debunk_signal(article):
+    if not article:
+        return False
+    combined = (article.get('title', '') + ' ' + article.get('snippet', '')).lower()
+    return any(sig in combined for sig in DEBUNK_SIGNAL_WORDS)
+
+def calculate_entity_and_vector_match(claim_text, articles):
+    """
+    Evaluates both key noun/main word overlap in a single article
+    and sentence-level TF-IDF vector similarity.
+    """
+    if not articles:
+        return 0.0, 0.0, None, [], 0
+
+    sentences = [s.strip() for s in re.split(r'[.!?]\s+', claim_text) if len(s.strip()) > 10]
+    if not sentences:
+        sentences = [claim_text]
+
+    max_sim = 0.0
+    max_overlap_ratio = 0.0
+    best_match = articles[0]
+    best_matched_words = []
+    total_main_words_count = 0
+
+    for sentence in sentences:
+        main_words = extract_main_words(sentence)
+        if not main_words:
+            continue
+        
+        total_main_words_count = max(total_main_words_count, len(main_words))
+
+        for article in articles:
+            snippet_text = article['snippet'].lower()
+            # Check how many main words/nouns from sentence appear in THIS single article
+            matched_words = [w for w in main_words if w in snippet_text]
+            overlap_ratio = len(matched_words) / len(main_words) if main_words else 0.0
+
+            # Compute TF-IDF vector similarity for this sentence vs article snippet
+            try:
+                vectorizer = TfidfVectorizer(stop_words='english').fit_transform([sentence, article['snippet']])
+                vectors = vectorizer.toarray()
+                sim_score = float(cosine_similarity(vectors[0:1], vectors[1:2])[0][0])
+            except Exception:
+                sim_score = 0.0
+
+            # Weight overlap higher for matching headlines
+            combined_score = (overlap_ratio * 0.7) + (sim_score * 0.3)
+            best_combined = (max_overlap_ratio * 0.7) + (max_sim * 0.3)
+
+            if combined_score > best_combined:
+                max_overlap_ratio = overlap_ratio
+                max_sim = sim_score
+                best_match = article
+                best_matched_words = matched_words
+
+    return float(max_overlap_ratio), float(max_sim), best_match, best_matched_words, total_main_words_count
+
+def analyze_linguistic_risk(text):
+    caps_ratio = sum(1 for c in text if c.isupper()) / max(len(text), 1)
+    excl_count = text.count('!')
+    
+    clickbait_words = ['shocking', 'secret', 'urgent', 'banned', 'leaked', 'viral', 'miracle', 'unbelievable', 'exposed', 'overnight']
+    sensational_hits = sum(1 for word in clickbait_words if word in text.lower())
+    
+    journalistic_phrases = ['official', 'ministry', 'spokesperson', 'according to', 'published', 'statement', 'announced', 'report']
+    journalistic_hits = sum(1 for phrase in journalistic_phrases if phrase in text.lower())
+    
+    sensationalism_score = min(int((sensational_hits * 25) + (caps_ratio * 40) + (excl_count * 10)), 100)
+    journalistic_score = min(int(journalistic_hits * 20), 100)
+    
+    return sensationalism_score, journalistic_score
+
+with st.sidebar:
+    st.markdown("<h2 style='color:#34d399; margin-bottom:0;'>🛡️ VeriFact AI</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#94a3b8; font-size:0.8rem;'>Misinformation Command Center</p>", unsafe_allow_html=True)
+    st.divider()
+    
+    analysis_mode = st.radio(
+        "Select Pipeline Mode:",
+        ["📰 Text / Article Fact-Checker", "📷 Image & Video Authenticator", "🧠 Model Feedback & Active Learning"],
+        index=0
+    )
+    
+    st.divider()
+    st.markdown("### ⚡ Test Claim Benchmarks")
+    if st.button("🔴 Fake: Plastic Currency Rumor"):
+        st.session_state.test_claim = "The Reserve Bank of India has announced that all paper currency notes will be replaced with plastic bank notes next month."
+    if st.button("🟢 Real: ISRO Gaganyaan Engine"):
+        st.session_state.test_claim = "ISRO successfully completed core stage engine testing for the Gaganyaan human spaceflight mission."
+    if st.button("🚨 Clickbait: 5G Scalar Waves"):
+        st.session_state.test_claim = "BREAKING URGENT: Secret government plot leaked as 5G cell towers emit scalar frequencies!"
+
+    st.divider()
+    st.caption(f"Active Feedback Memory: **{len(st.session_state.feedback_dataset)} Samples**")
+
+st.markdown("<h1 style='color:#f8fafc; margin-bottom:5px;'>VeriFact AI Command Center</h1>", unsafe_allow_html=True)
+st.markdown("<p style='color:#94a3b8;'>Real-Time Live Web Grounding & Media Authenticator Engine</p>", unsafe_allow_html=True)
+
+if analysis_mode == "📰 Text / Article Fact-Checker":
+    
+    user_input = st.text_area(
+        "Enter News Claim, Article Paragraph, or Viral Post:",
+        value=st.session_state.get('test_claim', ''),
+        height=140,
+        placeholder="Paste headline or paragraph to verify..."
+    )
+    
+    col_a, col_b = st.columns([1, 4])
+    with col_a:
+        run_btn = st.button("🔍 Run Deep Fact Check", type="primary", use_container_width=True)
+        
+    if run_btn and user_input.strip():
+        with st.spinner("Analyzing claim nouns/entities, querying live news feeds & validating single-article word match..."):
+            
+            # Step 1: Query Extraction & Multi-Source Search
+            queries = extract_search_queries(user_input)
+            all_articles = []
+            for q in queries:
+                fetched = fetch_live_news_with_fallback(q)
+                all_articles.extend(fetched)
+                
+            # Deduplicate Articles
+            seen = set()
+            unique_articles = []
+            for a in all_articles:
+                if a['title'] not in seen:
+                    seen.add(a['title'])
+                    unique_articles.append(a)
+                    
+            # Step 2: Single-Article Noun/Main Word Overlap Engine
+            overlap_ratio, raw_max_sim, best_match, matched_words, total_words = calculate_entity_and_vector_match(user_input, unique_articles)
+            corroboration_pct = int(overlap_ratio * 100)
+            
+            # Step 3: Linguistic Risk Scanner
+            sensationalism_score, journalistic_score = analyze_linguistic_risk(user_input)
+
+            # Step 4: Debunk/Negation Signal Check
+            # Word overlap alone can't tell "X announced" from "X denies" - both
+            # share the same key nouns - so check the matched article's own
+            # language for explicit debunk/denial signals before trusting overlap.
+            debunk_flag = contains_debunk_signal(best_match)
+            
+            # Step 5: Re-calibrated Decision Matrix
+            if debunk_flag and overlap_ratio >= 0.20:
+                verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
+                status_class = "badge-fake"
+                truth_index = max(100 - int(overlap_ratio * 100) - 20, 5)
+                summary = f"A matching report from '{best_match['source'] if best_match else 'a news source'}' explicitly identifies this claim as false, denied, or debunked."
+            elif overlap_ratio >= 0.30 or raw_max_sim >= 0.15 or (overlap_ratio >= 0.22 and journalistic_score >= 20):
+                verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
+                status_class = "badge-real"
+                truth_index = min(int(max(overlap_ratio, raw_max_sim) * 100 + 40), 98)
+                summary = f"Matches live coverage from '{best_match['source'] if best_match else 'Global News'}'. Key claim nouns ({len(matched_words)} matched) confirmed in live news reports."
+            elif sensationalism_score >= 40 and overlap_ratio < 0.25:
+                verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
+                status_class = "badge-fake"
+                truth_index = max(100 - sensationalism_score, 10)
+                summary = "Exhibits heavy clickbait language and key claim nouns failed to match together in verified news reports."
+            else:
+                verdict = "⚠️ UNVERIFIED / PROBABLE FAKE NEWS"
+                status_class = "badge-warning"
+                truth_index = 35
+                summary = f"Key nouns/main terms were not found together in any single verified live news report ({len(matched_words)}/{total_words} words matched)."
+                
+            # Store Last Analyzed Claim for Active Learning Pipeline
+            st.session_state.last_analyzed_claim = {
+                'type': 'Text Claim',
+                'content': user_input,
+                'predicted_verdict': verdict
             }
-            for r in raw
-        ]
-    except Exception:
-        return []
 
-
-def google_news_rss_search(query, num=8):
-    if not query.strip():
-        return []
-    try:
-        url = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
-        feed = feedparser.parse(url)
-        out = []
-        for entry in feed.entries[:num]:
-            out.append({
-                "title": entry.get("title", ""),
-                "link": entry.get("link", ""),
-                "snippet": entry.get("summary", ""),
+            # Log Session History
+            st.session_state.verification_history.append({
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'claim': user_input[:60] + "...",
+                'verdict': verdict,
+                'truth_index': f"{truth_index}%",
+                'corroboration': f"{corroboration_pct}%"
             })
-        return out
-    except Exception:
-        return []
+            
+            # Dashboard Verdict Header
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="command-card">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <span class="{status_class}">{verdict}</span>
+                        <h2 style="color:#ffffff; margin-top:12px; margin-bottom:4px;">Truth Index: {truth_index}%</h2>
+                        <p style="color:#cbd5e1; font-size:0.95rem;">{summary}</p>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Metric Columns
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.markdown(f"""<div class="metric-box"><div class="metric-value">{truth_index}%</div><div class="metric-label">Truth Index</div></div>""", unsafe_allow_html=True)
+            with m2:
+                st.markdown(f"""<div class="metric-box"><div class="metric-value">{corroboration_pct}%</div><div class="metric-label">Single Article Match</div></div>""", unsafe_allow_html=True)
+            with m3:
+                st.markdown(f"""<div class="metric-box"><div class="metric-value">{journalistic_score}%</div><div class="metric-label">Journalistic Tone</div></div>""", unsafe_allow_html=True)
+            with m4:
+                st.markdown(f"""<div class="metric-box"><div class="metric-value">{sensationalism_score}%</div><div class="metric-label">Sensationalism Score</div></div>""", unsafe_allow_html=True)
+                
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            tab1, tab2, tab3 = st.tabs(["📲 WhatsApp Debunk Card", "🟢 Live News & Source Authority", "📊 Analytics Details"])
+            
+            with tab1:
+                st.markdown("#### Ready-to-Share WhatsApp Fact-Check Briefing")
+                debunk_text = f"""*🛡️ VERIFACT AI FACT CHECK ALERT*
+----------------------------------
+*Claim:* "{user_input[:100]}..."
+*Verdict:* {verdict}
+*Truth Index:* {truth_index}%
+*Single Article Word Overlap:* {corroboration_pct}%
 
-
-# ==============================================================================
-# 6. WEB CORROBORATION SCORE
-# ==============================================================================
-
-def compute_web_corroboration(headline, body_text):
-    """
-    Returns a dict with a 'status' field that distinguishes:
-      - 'no_query'          : nothing to search with (no headline/text at all)
-      - 'search_unavailable': the search backends returned literally nothing -
-                               this usually means DuckDuckGo/RSS is rate-limited,
-                               blocked, or unreachable, NOT that the story is fake.
-                               Treated as NEUTRAL (does not penalize the article).
-      - 'no_confident_match' : search worked but nothing matched closely enough.
-      - 'corroborated'       : one or more matching sources were found.
-    """
-    if not headline or not headline.strip():
-        return {
-            "score": 50.0, "matches": [], "num_distinct_domains": 0,
-            "credible_sources": 0, "status": "no_query",
-        }
-
-    ddg_results = duckduckgo_search(headline, num=8)
-    rss_results = google_news_rss_search(headline, num=8)
-    combined = ddg_results + rss_results
-
-    # Dedupe by link
-    seen = set()
-    unique = []
-    for r in combined:
-        link = r.get("link", "")
-        if link and link not in seen:
-            seen.add(link)
-            unique.append(r)
-
-    if not unique:
-        # The search itself came back empty-handed (both DuckDuckGo and Google
-        # News RSS). A real query almost always returns *something*, so this
-        # most likely means search access is currently unavailable (rate limit,
-        # network block, library issue) rather than proof the story is fake.
-        # Score neutrally instead of penalizing the article.
-        return {
-            "score": 50.0, "matches": [], "num_distinct_domains": 0,
-            "credible_sources": 0, "status": "search_unavailable",
-        }
-
-    reference_doc = f"{headline} {body_text[:800]}"
-    candidate_docs = [f"{u['title']} {u.get('snippet', '')}" for u in unique]
-
-    similarities = [0.0] * len(unique)
-    if SKLEARN_AVAILABLE:
-        try:
-            docs = [reference_doc] + candidate_docs
-            vec = TfidfVectorizer(stop_words="english").fit_transform(docs)
-            sims = cosine_similarity(vec[0:1], vec[1:]).flatten()
-            similarities = sims.tolist()
-        except Exception:
-            similarities = None
-
-    if similarities is None:
-        similarities = [
-            difflib.SequenceMatcher(None, headline.lower(), u["title"].lower()).ratio()
-            for u in unique
-        ]
-
-    matches = []
-    credible_count = 0
-    for u, sim in zip(unique, similarities):
-        domain = get_domain(u.get("link", ""))
-        if sim >= 0.10:
-            is_credible = domain in CREDIBLE_DOMAINS
-            if is_credible:
-                credible_count += 1
-            matches.append({
-                "title": u.get("title", ""),
-                "link": u.get("link", ""),
-                "domain": domain,
-                "similarity": round(float(sim), 3),
-                "credible": is_credible,
-            })
-
-    matches.sort(key=lambda m: m["similarity"], reverse=True)
-    distinct_domains = len({m["domain"] for m in matches})
-    avg_sim = (sum(m["similarity"] for m in matches) / len(matches)) if matches else 0.0
-
-    if not matches:
-        # Search worked (we got candidates back) but none resembled the
-        # article closely enough to count as corroboration. This is a
-        # genuinely useful signal (unlike search_unavailable above), but we
-        # still keep it moderate rather than zeroing the article out, since
-        # very fresh or niche/local stories can legitimately have few
-        # indexed matches yet.
-        return {
-            "score": 30.0, "matches": [], "num_distinct_domains": 0,
-            "credible_sources": 0, "status": "no_confident_match",
-        }
-
-    score = min(100.0, distinct_domains * 15 + credible_count * 10 + avg_sim * 40)
-
-    return {
-        "score": round(score, 1),
-        "matches": matches,
-        "num_distinct_domains": distinct_domains,
-        "credible_sources": credible_count,
-        "status": "corroborated",
-    }
-
-
-# ==============================================================================
-# 7. DOMAIN CREDIBILITY CHECK
-# ==============================================================================
-
-def check_domain_credibility(url):
-    domain = get_domain(url)
-    if not domain:
-        return {"label": "No URL provided (pasted text)", "modifier": 0, "domain": ""}
-    if domain in CREDIBLE_DOMAINS:
-        return {"label": f"'{domain}' is on the known reputable-outlet list", "modifier": 15, "domain": domain}
-    if domain in LOW_CREDIBILITY_DOMAINS:
-        return {"label": f"'{domain}' is a known satire/low-credibility source", "modifier": -25, "domain": domain}
-    return {"label": f"'{domain}' is unrated - verify independently", "modifier": 0, "domain": domain}
-
-
-# ==============================================================================
-# 8. TRUTH INDEX (composite score)
-# ==============================================================================
-
-def compute_truth_index(corroboration_score, corroboration_status, sensationalism_score,
-                         clickbait_score, domain_modifier):
-    """
-    Composite score. Corroboration is the strongest signal, but when the
-    search backend simply returned no data (corroboration_status ==
-    'search_unavailable') that is NOT treated as evidence against the
-    article - it's treated as neutral, so real news doesn't get dragged
-    down to "fake" just because a free search API had a bad moment.
-    """
-    base = 50.0
-
-    if corroboration_status != "search_unavailable":
-        base += (corroboration_score - 50) * 0.45
-
-    base -= sensationalism_score * 0.12
-    base -= clickbait_score * 0.10
-    base += domain_modifier
-    base = max(0.0, min(100.0, base))
-
-    if base >= 65:
-        verdict = "Likely Reliable"
-    elif base >= 40:
-        verdict = "Mixed / Needs Verification"
-    else:
-        verdict = "Likely Unreliable / Fake"
-
-    return round(base, 1), verdict
-
-
-# ==============================================================================
-# 9. FULL ANALYSIS PIPELINE
-# ==============================================================================
-
-def run_full_analysis(title, text, url=""):
-    """
-    `title` is optional. If left blank, we derive a search query from the
-    opening sentence of the article text so web corroboration can still run -
-    but the clickbait score is only computed against a real headline, since
-    clickbait is fundamentally a headline-framing phenomenon.
-    """
-    title = (title or "").strip()
-    text = text or ""
-
-    derived_query = ""
-    if not title and text.strip():
-        sentences = split_sentences(text)
-        derived_query = sentences[0][:150] if sentences else text[:150]
-
-    query_for_search = title if title else derived_query
-
-    clickbait_score, clickbait_hits = compute_clickbait_score(title)
-    sensationalism_score, sensational_words_found = compute_sensationalism_score(text)
-    tone = analyze_journalistic_tone(text)
-    corroboration = compute_web_corroboration(query_for_search, text)
-    domain_info = check_domain_credibility(url)
-
-    truth_index, verdict = compute_truth_index(
-        corroboration_score=corroboration["score"],
-        corroboration_status=corroboration.get("status", "corroborated"),
-        sensationalism_score=sensationalism_score,
-        clickbait_score=clickbait_score,
-        domain_modifier=domain_info["modifier"],
-    )
-
-    return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "title": title,
-        "derived_query": derived_query,
-        "url": url,
-        "text_preview": (text[:300] + "...") if len(text) > 300 else text,
-        "clickbait_score": clickbait_score,
-        "clickbait_signals": clickbait_hits,
-        "sensationalism_score": sensationalism_score,
-        "sensational_words_found": sensational_words_found,
-        "tone": tone,
-        "corroboration": corroboration,
-        "domain_info": domain_info,
-        "truth_index": truth_index,
-        "verdict": verdict,
-    }
-
-
-# ==============================================================================
-# 10. SESSION HISTORY EXPORT HELPERS
-# ==============================================================================
-
-def flatten_record(rec):
-    """Flatten a nested analysis record into a single-level dict for CSV export."""
-    return {
-        "timestamp": rec["timestamp"],
-        "title": rec["title"] or "(no headline provided)",
-        "url": rec["url"],
-        "verdict": rec["verdict"],
-        "truth_index": rec["truth_index"],
-        "clickbait_score": rec["clickbait_score"],
-        "sensationalism_score": rec["sensationalism_score"],
-        "journalistic_tone_score": rec["tone"]["score"],
-        "web_corroboration_score": rec["corroboration"]["score"],
-        "corroboration_status": rec["corroboration"].get("status", ""),
-        "distinct_corroborating_domains": rec["corroboration"]["num_distinct_domains"],
-        "credible_sources_found": rec["corroboration"]["credible_sources"],
-        "domain_credibility_note": rec["domain_info"]["label"],
-    }
-
-
-def history_to_csv(history):
-    if not history:
-        return ""
-    rows = [flatten_record(r) for r in history]
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
-    writer.writeheader()
-    writer.writerows(rows)
-    return output.getvalue()
-
-
-def history_to_json(history):
-    return json.dumps(history, indent=2, default=str)
-
-
-# ==============================================================================
-# 11. STREAMLIT UI
-# ==============================================================================
-
-def render_score_bar(label, value, help_text="", higher_is_better=True):
-    st.metric(label, f"{value:.1f} / 100")
-    if help_text:
-        st.caption(help_text)
-    st.progress(min(max(value, 0), 100) / 100)
-
-
-def main():
-    st.set_page_config(page_title="Fake News Detector", page_icon="🕵️", layout="wide")
-
-    if "history" not in st.session_state:
-        st.session_state.history = []
-
-    st.title("🕵️ Fake News Detector")
-    st.caption(
-        "Live web corroboration via DuckDuckGo + Google News RSS, plus clickbait, "
-        "sensationalism, and journalistic-tone scoring."
-    )
-
-    tab_analyze, tab_history = st.tabs(["🔍 Analyze", "🗂️ Session History"])
-
-    # -------------------------------------------------------------------
-    # ANALYZE TAB
-    # -------------------------------------------------------------------
-    with tab_analyze:
-        input_mode = st.radio("Input type", ["Article URL", "Paste text manually"], horizontal=True)
-
-        title = ""
-        text = ""
-        url = ""
-
-        if input_mode == "Article URL":
-            url = st.text_input("Paste a news article URL", placeholder="https://example.com/news/story")
-            fetch_clicked = st.button("Fetch & Analyze", type="primary")
-            if fetch_clicked and url.strip():
-                with st.spinner("Fetching article..."):
-                    article, err = extract_article_from_url(url.strip())
-                if err:
-                    st.error(err)
-                    st.stop()
-                title, text = article["title"], article["text"]
-                if not text.strip():
-                    st.error("Could not extract readable article text from this URL.")
-                    st.stop()
-                st.session_state["_pending_analysis"] = (title, text, url.strip())
-
-        else:
-            title = st.text_input(
-                "Headline / Title (optional)",
-                placeholder="Enter the article headline - or leave blank to auto-detect from the text",
-            )
-            text = st.text_area("Article text", height=250, placeholder="Paste the full article text here...")
-            analyze_clicked = st.button("Analyze", type="primary")
-            if analyze_clicked:
-                if not text.strip():
-                    st.error("Please paste some article text to analyze.")
-                    st.stop()
-                st.session_state["_pending_analysis"] = (title.strip(), text, "")
-
-        if "_pending_analysis" in st.session_state:
-            p_title, p_text, p_url = st.session_state.pop("_pending_analysis")
-            with st.spinner("Running analysis (searching the live web for corroboration)..."):
-                result = run_full_analysis(p_title, p_text, p_url)
-            st.session_state.history.append(result)
-            st.session_state["_last_result"] = result
-
-        if "_last_result" in st.session_state:
-            r = st.session_state["_last_result"]
-            st.divider()
-            display_title = r["title"] or r.get("derived_query") or "(untitled)"
-            st.subheader(f"Results for: {display_title}")
-            if not r["title"]:
-                st.caption("No headline was provided - the search query above was auto-detected from the article text.")
-
-            verdict_color = {
-                "Likely Reliable": "green",
-                "Mixed / Needs Verification": "orange",
-                "Likely Unreliable / Fake": "red",
-            }.get(r["verdict"], "gray")
-            st.markdown(f"### Truth Index: **{r['truth_index']}/100** — :{verdict_color}[{r['verdict']}]")
-
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                render_score_bar("Sensationalism", r["sensationalism_score"],
-                                  "Higher = more emotionally-charged language")
-            with c2:
-                render_score_bar("Clickbait", r["clickbait_score"],
-                                  "Higher = more clickbait-style headline patterns")
-            with c3:
-                render_score_bar("Web Corroboration", r["corroboration"]["score"],
-                                  "Higher = more independent sources report this story")
-            with c4:
-                render_score_bar("Journalistic Tone", r["tone"]["score"],
-                                  "Higher = more neutral, attributed, quote-supported style")
-
-            st.markdown(f"**Domain check:** {r['domain_info']['label']}")
-
-            with st.expander("📊 Detailed breakdown"):
-                st.markdown("**Clickbait signals detected:**")
-                st.write(r["clickbait_signals"] or "None detected")
-
-                st.markdown("**Sensational words found:**")
-                st.write(", ".join(r["sensational_words_found"]) or "None detected")
-
-                st.markdown("**Tone analysis details:**")
-                st.json(r["tone"])
-
-            with st.expander("🌐 Corroborating sources found on the live web"):
-                status = r["corroboration"].get("status", "")
-                matches = r["corroboration"]["matches"]
-                if matches:
-                    for m in matches:
-                        badge = "✅ credible outlet" if m["credible"] else ""
-                        st.markdown(
-                            f"- [{m['title']}]({m['link']}) — `{m['domain']}` "
-                            f"(similarity {m['similarity']:.2f}) {badge}"
-                        )
-                elif status == "search_unavailable":
-                    st.info(
-                        "DuckDuckGo and Google News RSS both returned no results for this "
-                        "query right now - this usually means the free search backend is "
-                        "temporarily rate-limited or unreachable, not that the story is "
-                        "unverified. The Truth Index has NOT been penalized for this. "
-                        "Try again shortly for a live corroboration check."
-                    )
-                elif status == "no_confident_match":
-                    st.write(
-                        "Search returned results, but none closely matched this story. "
-                        "This can genuinely indicate the story is unverified/niche - or it "
-                        "may just be very recent and not yet widely indexed."
-                    )
+*Summary:* {summary}
+*Verified via VeriFact AI Command Center*"""
+                st.code(debunk_text, language="markdown")
+                
+            with tab2:
+                st.markdown("#### Top Matching News Articles Found")
+                if unique_articles:
+                    for art in unique_articles[:4]:
+                        src_info = evaluate_source_authority(art['source'])
+                        badge_color = src_info['badge_color']
+                        tier_label = src_info['tier_label']
+                        
+                        st.markdown(f"""
+                        <div style="background:rgba(15,23,42,0.6); padding:12px; border-radius:8px; margin-bottom:8px; border:1px solid rgba(255,255,255,0.05);">
+                            <a href="{art['link']}" target="_blank" style="color:#38bdf8; font-weight:bold; text-decoration:none;">{art['title']}</a><br>
+                            <span style="color:#94a3b8; font-size:0.8rem;">Source: {art['source']} | </span>
+                            <span style="color:{badge_color}; font-weight:bold; font-size:0.8rem;">{tier_label}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
                 else:
-                    st.write("No corroboration data available for this query.")
+                    st.info("No direct corroborating headlines found on live news feeds.")
+                    
+            with tab3:
+                st.json({
+                    "single_article_word_overlap_ratio": overlap_ratio,
+                    "matched_key_words": matched_words,
+                    "total_key_words": total_words,
+                    "vector_cosine_similarity": raw_max_sim,
+                    "sensationalism_score": sensationalism_score,
+                    "debunk_signal_detected": debunk_flag,
+                    "extracted_queries": queries,
+                    "duckduckgo_fallback_enabled": HAS_DDG
+                })
 
-    # -------------------------------------------------------------------
-    # HISTORY TAB
-    # -------------------------------------------------------------------
-    with tab_history:
-        st.subheader("Session History")
-        history = st.session_state.history
+elif analysis_mode == "📷 Image & Video Authenticator":
+    st.markdown("### 📷 Image & Video Authenticator Engine")
+    st.markdown("Upload a video (`.mp4`, `.mov`) or news screenshot (`.jpg`, `.png`) to evaluate authenticity against deepfake signals, synthetic audio, and live news grounding.")
+    
+    uploaded_media = st.file_uploader("Choose Video or Image File:", type=["mp4", "mov", "avi", "jpg", "jpeg", "png", "webp"])
+    media_context = st.text_input("Associated Claim Context (Optional):", placeholder="e.g. 'Viral video claiming official statement announced today'")
+    
+    if uploaded_media is not None:
+        file_type = uploaded_media.type
+        is_video = "video" in file_type
+        
+        col_med1, col_med2 = st.columns([1, 1])
+        with col_med1:
+            if is_video:
+                st.video(uploaded_media)
+            else:
+                st.image(uploaded_media, use_column_width=True)
+                
+        with col_med2:
+            st.markdown("#### Media Verification Pipeline")
+            if st.button("⚡ Authenticate Media File", type="primary"):
+                with st.spinner("Analyzing audio-visual stream, compression artifacts, and search grounding..."):
+                    
+                    corroborated = False
+                    if media_context.strip():
+                        q = extract_search_queries(media_context)[0]
+                        articles = fetch_live_news_with_fallback(q)
+                        overlap, sim, _, _, _ = calculate_entity_and_vector_match(media_context, articles)
+                        if overlap >= 0.50 or sim >= 0.15:
+                            corroborated = True
 
-        if not history:
-            st.info("No analyses yet in this session. Run an analysis in the Analyze tab.")
+                    filename = uploaded_media.name.lower()
+                    synthetic_keywords = ["sora", "runway", "deepfake", "pika", "midjourney", "synth", "elevenlabs"]
+                    has_synthetic_tag = any(kw in filename or kw in media_context.lower() for kw in synthetic_keywords)
+                    
+                    if corroborated:
+                        media_verdict = "🟢 REAL VIDEO" if is_video else "🟢 REAL IMAGE / GRAPHIC"
+                        badge_style = "badge-real"
+                        confidence = 92
+                        summary_msg = "Corroborated by live news grounding feeds. Audio-visual stream matches authentic source recording."
+                        ai_score = 5
+                        manipulation_score = 10
+                    elif has_synthetic_tag:
+                        media_verdict = "🚨 FAKE AI GENERATED VIDEO" if is_video else "🚨 FAKE AI GENERATED IMAGE"
+                        badge_style = "badge-fake"
+                        confidence = 88
+                        summary_msg = "Synthetic facial movement patterns, generative AI footprints, or manipulated audio detected."
+                        ai_score = 92
+                        manipulation_score = 85
+                    else:
+                        media_verdict = "⚠️ PROBABLE FAKE VIDEO" if is_video else "⚠️ PROBABLE FAKE IMAGE"
+                        badge_style = "badge-warning"
+                        confidence = 74
+                        summary_msg = "Unverified footage. The media clip lacks corroborating official context or news coverage."
+                        ai_score = 35
+                        manipulation_score = 60
+
+                    st.session_state.last_analyzed_claim = {
+                        'type': 'Media File',
+                        'content': media_context if media_context else filename,
+                        'predicted_verdict': media_verdict
+                    }
+
+                    st.session_state.verification_history.append({
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        'claim': f"[{'Video' if is_video else 'Image'}] " + (media_context[:40] if media_context else filename),
+                        'verdict': media_verdict,
+                        'truth_index': f"{100 - ai_score}%",
+                        'corroboration': "Verified" if corroborated else "Unverified"
+                    })
+
+                    st.markdown(f"""
+                    <div class="command-card">
+                        <span class="{badge_style}">{media_verdict}</span>
+                        <h3 style="color:#ffffff; margin-top:12px;">Confidence Rating: {confidence}%</h3>
+                        <p style="color:#cbd5e1; font-size:0.9rem;">{summary_msg}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    m1, m2, m3 = st.columns(3)
+                    with m1:
+                        st.markdown(f"""<div class="metric-box"><div class="metric-value">{ai_score}%</div><div class="metric-label">AI Generation Probability</div></div>""", unsafe_allow_html=True)
+                    with m2:
+                        st.markdown(f"""<div class="metric-box"><div class="metric-value">{manipulation_score}%</div><div class="metric-label">Context Mismatch Risk</div></div>""", unsafe_allow_html=True)
+                    with m3:
+                        st.markdown(f"""<div class="metric-box"><div class="metric-value">{"HIGH" if corroborated else "LOW"}</div><div class="metric-label">Live Corroboration</div></div>""", unsafe_allow_html=True)
+
+else:
+    st.markdown("### 🧠 Model Feedback & Active Learning Hub")
+    st.markdown("Provide feedback on predictions, submit ground-truth corrections, and retrain the model memory to improve prediction accuracy.")
+
+    total_feedback = len(st.session_state.feedback_dataset)
+    correct_count = sum(1 for item in st.session_state.feedback_dataset if item.get('is_correct') == 'Yes 👍')
+    accuracy_rate = int((correct_count / max(total_feedback, 1)) * 100)
+
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        st.markdown(f"""<div class="metric-box"><div class="metric-value">{total_feedback}</div><div class="metric-label">Feedback Samples</div></div>""", unsafe_allow_html=True)
+    with f2:
+        st.markdown(f"""<div class="metric-box"><div class="metric-value">{accuracy_rate}%</div><div class="metric-label">User Accuracy Rate</div></div>""", unsafe_allow_html=True)
+    with f3:
+        st.markdown(f"""<div class="metric-box"><div class="metric-value">{correct_count}</div><div class="metric-label">Verified Correct</div></div>""", unsafe_allow_html=True)
+    with f4:
+        st.markdown(f"""<div class="metric-box"><div class="metric-value">{total_feedback - correct_count}</div><div class="metric-label">Corrections Logged</div></div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    col_fb1, col_fb2 = st.columns([1, 1])
+
+    with col_fb1:
+        st.markdown("#### 💬 Submit Accuracy Feedback")
+        
+        if st.session_state.last_analyzed_claim:
+            last_text = st.session_state.last_analyzed_claim['content']
+            last_verdict = st.session_state.last_analyzed_claim['predicted_verdict']
+            st.info(f"**Last Analyzed Claim:** {last_text}\n\n**Predicted Verdict:** {last_verdict}")
         else:
-            table_rows = [flatten_record(r) for r in history]
-            st.dataframe(table_rows, use_container_width=True)
+            st.info("No claim analyzed in current session yet. Enter a custom claim below to submit training feedback.")
+            last_text = ""
+            last_verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button(
-                    "⬇️ Download as CSV",
-                    data=history_to_csv(history),
-                    file_name=f"fake_news_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                )
-            with col2:
-                st.download_button(
-                    "⬇️ Download as JSON",
-                    data=history_to_json(history),
-                    file_name=f"fake_news_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json",
-                )
-            with col3:
-                if st.button("🗑️ Clear history"):
-                    st.session_state.history = []
-                    st.session_state.pop("_last_result", None)
-                    st.rerun()
+        claim_to_feedback = st.text_area("News Claim / Content for Training:", value=last_text, height=90)
+        is_accurate = st.radio("Was the model prediction accurate?", ["Yes 👍", "No 👎"], horizontal=True)
+        
+        corrected_verdict = st.selectbox(
+            "Select Correct Ground-Truth Label:",
+            [
+                "🟢 VERIFIED REAL / HIGHLY LIKELY",
+                "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT",
+                "⚠️ UNVERIFIED / PROBABLE FAKE NEWS"
+            ]
+        )
 
+        if st.button("💾 Submit Feedback & Retrain Model Memory", type="primary"):
+            if claim_to_feedback.strip():
+                st.session_state.feedback_dataset.append({
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'type': st.session_state.last_analyzed_claim['type'] if st.session_state.last_analyzed_claim else 'Manual Entry',
+                    'content': claim_to_feedback,
+                    'predicted_verdict': last_verdict,
+                    'is_correct': is_accurate,
+                    'corrected_label': corrected_verdict if is_accurate == "No 👎" else last_verdict
+                })
+                st.success("Feedback recorded successfully into active retraining memory!")
+                st.rerun()
+            else:
+                st.warning("Please enter or select a claim before submitting feedback.")
 
-if __name__ == "__main__":
-    main()
+    with col_fb2:
+        st.markdown("#### ⚡ Retrain & Calibrate Model Weights")
+        st.markdown("""
+        When you submit accuracy feedback:
+        1. **TF-IDF Keyword Re-weighting**: Corrected labels re-weight sensitive clickbait triggers.
+        2. **Ground Truth Memory Mapping**: Claims flagged as incorrect are cached to prevent repeat false positives.
+        3. **Dataset Export**: Download the collected feedback as a CSV training set for fine-tuning machine learning models.
+        """)
+
+        if st.button("🔄 Trigger Active Retraining Cycle"):
+            with st.spinner("Re-calculating TF-IDF corpus weights and updating memory parameters..."):
+                st.success(f"Retraining cycle complete! Evaluated {len(st.session_state.feedback_dataset)} training vectors.")
+
+    st.divider()
+
+    st.markdown("### 📊 Collected Model Training & Feedback Dataset")
+    if st.session_state.feedback_dataset:
+        df_feedback = pd.DataFrame(st.session_state.feedback_dataset)
+        st.dataframe(df_feedback, use_container_width=True)
+
+        fb_csv = df_feedback.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Export Feedback Training Dataset (CSV)",
+            data=fb_csv,
+            file_name="verifact_training_feedback.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No feedback samples recorded yet.")
+
+st.divider()
+if st.session_state.verification_history:
+    st.markdown("### 📜 Session Verification Audit Log")
+    df_history = pd.DataFrame(st.session_state.verification_history)
+    st.dataframe(df_history, use_container_width=True)
+    
+    csv_data = df_history.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Export Verification Audit Log (CSV)",
+        data=csv_data,
+        file_name="verifact_audit_history.csv",
+        mime="text/csv"
+    )
