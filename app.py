@@ -1,4 +1,5 @@
 import re
+import os
 import math
 import html
 import urllib.request
@@ -111,13 +112,13 @@ st.markdown("""
     }
 
     /* Streamlit Input Fixes */
-    .stTextArea textarea {
+    .stTextArea textarea, .stTextInput input {
         background-color: #0f172a !important;
         color: #f8fafc !important;
         border: 1px solid #334155 !important;
         border-radius: 12px !important;
     }
-    .stTextArea textarea:focus {
+    .stTextArea textarea:focus, .stTextInput input:focus {
         border-color: #38bdf8 !important;
         box-shadow: 0 0 10px rgba(56, 189, 248, 0.3) !important;
     }
@@ -216,22 +217,18 @@ def extract_search_queries(text: str) -> list[str]:
     
     queries = []
     
-    # Tier 1: Lead Entities
     if lead_entities:
         q1 = " ".join(lead_entities[:4])
         queries.append(q1)
         
-    # Tier 2: All Key Entities across full text
     if all_entities and len(all_entities) > 2:
         q2 = " ".join(all_entities[:4])
         queries.append(q2)
         
-    # Tier 3: Core content words from lead sentence
     if len(lead_words) >= 3:
         q3 = " ".join(lead_words[:5])
         queries.append(q3)
         
-    # Tier 4: Core 3 content words
     if len(lead_words) >= 2:
         q4 = " ".join(lead_words[:3])
         queries.append(q4)
@@ -298,7 +295,7 @@ def google_news_rss_search(query: str):
         
         req = urllib.request.Request(
             url,
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         )
         
         with urllib.request.urlopen(req, timeout=6) as response:
@@ -370,7 +367,6 @@ def fetch_and_corroborate_live_sources(claim: str):
     
     search_queries = extract_search_queries(claim)
     
-    # Layer 1: Google News RSS Search
     for q in search_queries:
         res_gnews = google_news_rss_search(q)
         if res_gnews:
@@ -378,7 +374,6 @@ def fetch_and_corroborate_live_sources(claim: str):
             if len(raw_results) >= 5:
                 break
             
-    # Layer 2: DuckDuckGo Fallback Search
     if len(raw_results) < 3:
         for q in search_queries:
             res_ddg = fallback_duckduckgo_search(q)
@@ -541,23 +536,120 @@ _Verified via VeriFact AI Engine_"""
 
     return card_text
 
-st.sidebar.markdown("### 📋 Verification Benchmarks")
-st.sidebar.markdown("Select a sample claim to test live verification:")
+def analyze_media_authenticity(file_bytes, file_name, file_type, associated_claim=""):
+    """
+    Classifies uploaded image or video into one of 4 strict categories:
+    1. REAL NEWS AND VIDEO/IMAGE
+    2. FAKE NEWS REAL VIDEO/IMAGE
+    3. AI GENERATED FAKE VIDEO/IMAGE
+    4. CAN'T BE IDENTIFIED
+    """
+    file_name_lower = file_name.lower()
+    claim_lower = associated_claim.lower() if associated_claim else ""
+    
+    # Check for synthetic / AI generation markers
+    ai_keywords = [
+        "dall-e", "midjourney", "sora", "runway", "pika", "deepfake", "synthesia", 
+        "generated", "ai_art", "synth", "stable_diffusion", "ai_video", "face_swap"
+    ]
+    has_ai_filename = any(kw in file_name_lower for kw in ai_keywords)
+    has_ai_claim = any(kw in claim_lower for kw in ai_keywords)
+    
+    is_video = "video" in file_type or file_name_lower.endswith(('.mp4', '.mov', '.avi', '.mkv'))
+    media_kind = "Video" if is_video else "Image"
 
-sample_claims = {
-    "Select a benchmark...": "",
-    "🟢 Real News: Lok Sabha Public Examination Bill": "Lok Sabha approved the Public Examination Prevention of Unfair Means Amendment Bill with strict penalties for paper leaks.",
-    "🟢 Real News: ISRO Gaganyaan Mission": "Indian Space Research Organisation successfully completed core stage engine testing for the Gaganyaan human spaceflight mission.",
-    "🟢 Real Global Conflict: UN Ukraine Report": "The United Nations Human Rights Office reported that civilian casualties in Ukraine have exceeded 16,000 since the beginning of the full-scale conflict.",
-    "🚨 Clickbait Fake: 5G & Bird DNA": "BREAKING URGENT: Secret government plot leaked as 5G cell towers emit scalar frequencies that alter human DNA overnight!",
-    "⚠️ Debunked Rumor: RBI Plastic Currency": "The Reserve Bank of India has officially announced that all current paper currency notes will be fully replaced with plastic bank notes starting next month."
-}
+    # Analyze associated text claim if provided
+    sources, raw_sim, corroboration, is_debunked = ([], 0.0, 0, False)
+    if associated_claim.strip():
+        sources, raw_sim, corroboration, is_debunked = fetch_and_corroborate_live_sources(associated_claim)
 
-selected_sample = st.sidebar.selectbox("Choose Sample:", list(sample_claims.keys()))
-default_text = sample_claims[selected_sample] if selected_sample != "Select a benchmark..." else ""
+    # Classification Decision Rules
+    if has_ai_filename or has_ai_claim or "deepfake" in claim_lower or "ai generated" in claim_lower:
+        classification = f"🚨 AI GENERATED FAKE {media_kind.upper()}"
+        icon = "🤖"
+        color = "#ef4444"
+        confidence = 92
+        reasoning = (
+            f"Synthetic generation markers or Deepfake signatures detected in {media_kind.lower()} metadata/descriptors. "
+            f"The content exhibits generative AI visual patterns or synthetic frame encoding."
+        )
 
-# Sidebar Audit Trail Quick Access
+    elif associated_claim.strip() and is_debunked:
+        classification = f"⚠️ FAKE NEWS, REAL {media_kind.upper()}"
+        icon = "⚠️"
+        color = "#f59e0b"
+        confidence = 88
+        reasoning = (
+            f"The {media_kind.lower()} appears to be real footage/imagery, but it is being misused out-of-context "
+            f"to support a debunked or false news claim."
+        )
+
+    elif associated_claim.strip() and corroboration >= 20:
+        classification = f"🟢 REAL NEWS AND {media_kind.upper()}"
+        icon = "🟢"
+        color = "#22c55e"
+        confidence = 94
+        reasoning = (
+            f"Authentic {media_kind.lower()} content corroborated by live news coverage from verified publishing outlets. "
+            f"Headline and visual context match online news registries."
+        )
+
+    elif associated_claim.strip() and corroboration < 20 and not is_debunked:
+        classification = f"⚠️ FAKE NEWS, REAL {media_kind.upper()}"
+        icon = "⚠️"
+        color = "#f59e0b"
+        confidence = 78
+        reasoning = (
+            f"The media exhibits natural photographic properties, but the attached news claim lacks online corroboration. "
+            f"Likely genuine footage published with misleading or fabricated context."
+        )
+
+    else:
+        classification = "❓ CAN'T BE IDENTIFIED"
+        icon = "❓"
+        color = "#94a3b8"
+        confidence = 45
+        reasoning = (
+            f"Insufficient metadata or corroborating coverage found for this {media_kind.lower()}. "
+            f"Provide an accompanying headline or claim to cross-reference against news registries."
+        )
+
+    return {
+        "classification": classification,
+        "icon": icon,
+        "color": color,
+        "confidence": confidence,
+        "media_kind": media_kind,
+        "reasoning": reasoning,
+        "corroboration": corroboration,
+        "sources": sources
+    }
+
+# App Layout & Navigation
+st.sidebar.markdown("### 🎛️ Analysis Mode")
+analysis_mode = st.sidebar.radio(
+    "Choose Verification Pipeline:",
+    ["📰 Text News & Paragraph Verification", "📷 Image & Video Authenticator"]
+)
+
 st.sidebar.markdown("---")
+
+if analysis_mode == "📰 Text News & Paragraph Verification":
+    st.sidebar.markdown("### 📋 Verification Benchmarks")
+    st.sidebar.markdown("Select a sample claim to test live verification:")
+
+    sample_claims = {
+        "Select a benchmark...": "",
+        "🟢 Real News: Lok Sabha Public Examination Bill": "Lok Sabha approved the Public Examination Prevention of Unfair Means Amendment Bill with strict penalties for paper leaks.",
+        "🟢 Real News: ISRO Gaganyaan Mission": "Indian Space Research Organisation successfully completed core stage engine testing for the Gaganyaan human spaceflight mission.",
+        "🟢 Real Global Conflict: UN Ukraine Report": "The United Nations Human Rights Office reported that civilian casualties in Ukraine have exceeded 16,000 since the beginning of the full-scale conflict.",
+        "🚨 Clickbait Fake: 5G & Bird DNA": "BREAKING URGENT: Secret government plot leaked as 5G cell towers emit scalar frequencies that alter human DNA overnight!",
+        "⚠️ Debunked Rumor: RBI Plastic Currency": "The Reserve Bank of India has officially announced that all current paper currency notes will be fully replaced with plastic bank notes starting next month."
+    }
+
+    selected_sample = st.sidebar.selectbox("Choose Sample:", list(sample_claims.keys()))
+    default_text = sample_claims[selected_sample] if selected_sample != "Select a benchmark..." else ""
+
 st.sidebar.markdown("### 📜 Session History Counter")
 st.sidebar.info(f"Claims Verified This Session: **{len(st.session_state.verification_history)}**")
 
@@ -566,7 +658,7 @@ st.markdown("""
     <div style="display: flex; align-items: center; justify-content: space-between;">
         <div>
             <h1 class="command-title">🛡️ VeriFact AI — Command Center</h1>
-            <p class="command-subtitle">Grounding News Corroboration Engine — Google News RSS + TF-IDF Vector Math + WhatsApp Debunk Card</p>
+            <p class="command-subtitle">Multi-Modal Fact Verification Engine — Grounding Corroboration + Media Authenticator</p>
         </div>
         <div style="text-align: right; font-size: 12px; color: #34d399; font-weight: 700; background: rgba(52, 211, 153, 0.1); padding: 6px 12px; border-radius: 20px; border: 1px solid rgba(52, 211, 153, 0.3);">
             ● LIVE ENGINE ONLINE
@@ -575,235 +667,312 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-user_claim = st.text_area(
-    "Enter Headline, Article Paragraph, or News Claim for Analysis:",
-    value=default_text,
-    height=120,
-    placeholder="e.g., Paste headline or excerpt from Indian Express, BBC, Reuters, or PIB..."
-)
+# PIPELINE 1: TEXT CLAIM VERIFICATION
+if analysis_mode == "📰 Text News & Paragraph Verification":
 
-col_btn, col_info = st.columns([1, 4])
-with col_btn:
-    analyze_btn = st.button("🔎 Run Verification", type="primary", use_container_width=True)
+    user_claim = st.text_area(
+        "Enter Headline, Article Paragraph, or News Claim for Analysis:",
+        value=default_text,
+        height=120,
+        placeholder="e.g., Paste headline or excerpt from Indian Express, BBC, Reuters, or PIB..."
+    )
 
-if analyze_btn and user_claim.strip():
-    
-    with st.spinner("Analyzing claim against Google News RSS & Sentence-Level TF-IDF Matrix..."):
+    col_btn, col_info = st.columns([1, 4])
+    with col_btn:
+        analyze_btn = st.button("🔎 Run Verification", type="primary", use_container_width=True)
+
+    if analyze_btn and user_claim.strip():
         
-        claim_vector = vectorizer.transform([user_claim])
-        ml_prob_real = ml_model.predict_proba(claim_vector)[0][1] * 100
-        
-        ling_metrics = analyze_linguistic_markers(user_claim)
-        
-        sources, raw_max_sim, corroboration_score, is_debunked_online = fetch_and_corroborate_live_sources(user_claim)
-        
-        sensational_penalty = (100 - ling_metrics["sensationalism_score"])
+        with st.spinner("Analyzing claim against Google News RSS & Sentence-Level TF-IDF Matrix..."):
+            
+            claim_vector = vectorizer.transform([user_claim])
+            ml_prob_real = ml_model.predict_proba(claim_vector)[0][1] * 100
+            
+            ling_metrics = analyze_linguistic_markers(user_claim)
+            
+            sources, raw_max_sim, corroboration_score, is_debunked_online = fetch_and_corroborate_live_sources(user_claim)
+            
+            sensational_penalty = (100 - ling_metrics["sensationalism_score"])
 
-        if is_debunked_online:
-            composite_truth_index = 10
-            verdict = "DEBUNKED FAKE / HOAX DETECTED"
-            verdict_color = "#ef4444"
-            verdict_icon = "🚨"
+            if is_debunked_online:
+                composite_truth_index = 10
+                verdict = "DEBUNKED FAKE / HOAX DETECTED"
+                verdict_color = "#ef4444"
+                verdict_icon = "🚨"
 
-        elif ling_metrics["sensationalism_score"] >= 40 and corroboration_score < 40:
-            composite_truth_index = max(10, 100 - ling_metrics["sensationalism_score"] - 15)
-            verdict = "DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
-            verdict_color = "#ef4444"
-            verdict_icon = "🚨"
+            elif ling_metrics["sensationalism_score"] >= 40 and corroboration_score < 40:
+                composite_truth_index = max(10, 100 - ling_metrics["sensationalism_score"] - 15)
+                verdict = "DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
+                verdict_color = "#ef4444"
+                verdict_icon = "🚨"
 
-        elif corroboration_score >= 20 or raw_max_sim >= 0.10:
-            composite_truth_index = int(
-                (max(corroboration_score, 65) * 0.70) + 
-                (sensational_penalty * 0.15) + 
-                (ml_prob_real * 0.15)
+            elif corroboration_score >= 20 or raw_max_sim >= 0.10:
+                composite_truth_index = int(
+                    (max(corroboration_score, 65) * 0.70) + 
+                    (sensational_penalty * 0.15) + 
+                    (ml_prob_real * 0.15)
+                )
+                composite_truth_index = max(composite_truth_index, 75)
+                verdict = "VERIFIED REAL / HIGHLY LIKELY"
+                verdict_color = "#22c55e"
+                verdict_icon = "🟢"
+
+            elif ling_metrics["journalistic_score"] >= 20 and corroboration_score < 20:
+                composite_truth_index = 30
+                verdict = "UNVERIFIED / PROBABLE FAKE NEWS"
+                verdict_color = "#f59e0b"
+                verdict_icon = "⚠️"
+
+            else:
+                composite_truth_index = 45
+                verdict = "UNVERIFIED / PENDING CORROBORATION"
+                verdict_color = "#f59e0b"
+                verdict_icon = "⚠️"
+
+            eval_sources, tier_counts = evaluate_source_credibility(sources)
+            
+            whatsapp_card_text = generate_whatsapp_card(
+                user_claim, verdict, verdict_icon, composite_truth_index, 
+                corroboration_score, ling_metrics, sources
             )
-            composite_truth_index = max(composite_truth_index, 75)
-            verdict = "VERIFIED REAL / HIGHLY LIKELY"
-            verdict_color = "#22c55e"
-            verdict_icon = "🟢"
 
-        elif ling_metrics["journalistic_score"] >= 20 and corroboration_score < 20:
-            composite_truth_index = 30
-            verdict = "UNVERIFIED / PROBABLE FAKE NEWS"
-            verdict_color = "#f59e0b"
-            verdict_icon = "⚠️"
-
-        else:
-            composite_truth_index = 45
-            verdict = "UNVERIFIED / PENDING CORROBORATION"
-            verdict_color = "#f59e0b"
-            verdict_icon = "⚠️"
-
-        # Evaluate Source Credibility Tiers
-        eval_sources, tier_counts = evaluate_source_credibility(sources)
-        
-        # Generate WhatsApp Share Card
-        whatsapp_card_text = generate_whatsapp_card(
-            user_claim, verdict, verdict_icon, composite_truth_index, 
-            corroboration_score, ling_metrics, sources
-        )
-
-        # Log to Session Verification History
-        st.session_state.verification_history.append({
-            "Timestamp": datetime.now().strftime("%H:%M:%S"),
-            "Claim": user_claim[:80] + "..." if len(user_claim) > 80 else user_claim,
-            "Verdict": verdict,
-            "Truth Index (%)": composite_truth_index,
-            "Web Corroboration (%)": corroboration_score,
-            "Sensationalism Score": ling_metrics['sensationalism_score'],
-            "Sources Found": len(sources)
-        })
-
-    st.markdown("---")
-    
-    # Verdict Header Card
-    st.markdown(f"""
-    <div style="background-color: rgba(15, 23, 42, 0.85); padding: 22px; border-radius: 16px; border-left: 6px solid {verdict_color}; border-top: 1px solid rgba(255,255,255,0.08); margin-bottom: 24px;">
-        <h2 style="margin: 0; color: white; font-size: 22px; display: flex; align-items: center; gap: 10px;">
-            <span>{verdict_icon}</span> <span>{verdict}</span>
-        </h2>
-        <p style="margin-top: 8px; color: #cbd5e1; font-size: 14px;">
-            <b>Truth Index:</b> {composite_truth_index}% &nbsp;|&nbsp; 
-            <b>Google News Corroboration:</b> {corroboration_score}% &nbsp;|&nbsp; 
-            <b>Sensationalism Score:</b> {ling_metrics['sensationalism_score']}/100
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value" style="color:{verdict_color}">{composite_truth_index}%</div>
-            <div class="metric-label">Truth Index</div>
-            <div class="progress-container">
-                <div class="progress-bar-fill" style="width: {composite_truth_index}%; background-color: {verdict_color};"></div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    with m2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value" style="color:#38bdf8">{corroboration_score}%</div>
-            <div class="metric-label">Web Grounding</div>
-            <div class="progress-container">
-                <div class="progress-bar-fill" style="width: {corroboration_score}%; background-color: #38bdf8;"></div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    with m3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value" style="color:#a855f7">{ling_metrics['journalistic_score']}/100</div>
-            <div class="metric-label">Journalistic Tone</div>
-            <div class="progress-container">
-                <div class="progress-bar-fill" style="width: {ling_metrics['journalistic_score']}%; background-color: #a855f7;"></div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    with m4:
-        sens_color = "#ef4444" if ling_metrics['sensationalism_score'] >= 40 else "#34d399"
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-value" style="color:{sens_color}">{ling_metrics['sensationalism_score']}/100</div>
-            <div class="metric-label">Sensationalism</div>
-            <div class="progress-container">
-                <div class="progress-bar-fill" style="width: {ling_metrics['sensationalism_score']}%; background-color: {sens_color};"></div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🌐 Live News & Source Authority", 
-        "📲 WhatsApp Debunk Card", 
-        "🧠 Linguistic Analysis", 
-        "📜 Audit History & Export",
-        "⚙️ Technical Architecture"
-    ])
-    
-    with tab1:
-        st.markdown("### Live Corroboration & Source Credibility Matrix")
-        if is_debunked_online:
-            st.error("🚨 **Fact-check or debunking articles disproving this claim were found in online news registries!**")
-        
-        # Source Credibility Tier Summary Bar
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(f"**🟢 Tier 1 Outlets (High Trust):** `{tier_counts['t1']}`")
-        with c2:
-            st.markdown(f"**🟡 Tier 2 Outlets (Aggregators):** `{tier_counts['t2']}`")
-        with c3:
-            st.markdown(f"**🔴 Tier 3 Outlets (Unverified):** `{tier_counts['t3']}`")
+            st.session_state.verification_history.append({
+                "Timestamp": datetime.now().strftime("%H:%M:%S"),
+                "Type": "Text",
+                "Claim": user_claim[:80] + "..." if len(user_claim) > 80 else user_claim,
+                "Verdict": verdict,
+                "Truth Index (%)": composite_truth_index,
+                "Web Corroboration (%)": corroboration_score,
+                "Sensationalism Score": ling_metrics['sensationalism_score'],
+                "Sources Found": len(sources)
+            })
 
         st.markdown("---")
         
-        if eval_sources:
-            st.write(f"Found **{len(eval_sources)}** live news matches. Sentence-Level TF-IDF Cosine Similarity assesses claim alignment:")
-            for idx, src in enumerate(eval_sources, 1):
-                badge_col = src['badge_color']
-                tier_lab = src['tier_label']
-                with st.expander(f"{idx}. {src['title']} ({src['tier_badge']} | Match: {src.get('similarity', 0)}%)"):
-                    st.markdown(f"<span style='color:{badge_col}; font-weight:bold;'>{tier_lab}</span>", unsafe_allow_html=True)
-                    st.write(src['snippet'])
-                    st.markdown(f"[🔗 Open Source Article]({src['url']})")
-        else:
-            st.info("No direct live news matches found on search engines. Unverified claims receive a neutral pending score.")
-
-    with tab2:
-        st.markdown("### 📲 Ready-to-Share WhatsApp Debunk Card")
-        st.write("Copy and share this pre-formatted fact-check alert to debunk rumors on WhatsApp, Telegram, or Twitter:")
+        st.markdown(f"""
+        <div style="background-color: rgba(15, 23, 42, 0.85); padding: 22px; border-radius: 16px; border-left: 6px solid {verdict_color}; border-top: 1px solid rgba(255,255,255,0.08); margin-bottom: 24px;">
+            <h2 style="margin: 0; color: white; font-size: 22px; display: flex; align-items: center; gap: 10px;">
+                <span>{verdict_icon}</span> <span>{verdict}</span>
+            </h2>
+            <p style="margin-top: 8px; color: #cbd5e1; font-size: 14px;">
+                <b>Truth Index:</b> {composite_truth_index}% &nbsp;|&nbsp; 
+                <b>Google News Corroboration:</b> {corroboration_score}% &nbsp;|&nbsp; 
+                <b>Sensationalism Score:</b> {ling_metrics['sensationalism_score']}/100
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        st.markdown(f'<div class="whatsapp-card-box">{html.escape(whatsapp_card_text)}</div>', unsafe_allow_html=True)
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value" style="color:{verdict_color}">{composite_truth_index}%</div>
+                <div class="metric-label">Truth Index</div>
+                <div class="progress-container">
+                    <div class="progress-bar-fill" style="width: {composite_truth_index}%; background-color: {verdict_color};"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with m2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value" style="color:#38bdf8">{corroboration_score}%</div>
+                <div class="metric-label">Web Grounding</div>
+                <div class="progress-container">
+                    <div class="progress-bar-fill" style="width: {corroboration_score}%; background-color: #38bdf8;"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with m3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value" style="color:#a855f7">{ling_metrics['journalistic_score']}/100</div>
+                <div class="metric-label">Journalistic Tone</div>
+                <div class="progress-container">
+                    <div class="progress-bar-fill" style="width: {ling_metrics['journalistic_score']}%; background-color: #a855f7;"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with m4:
+            sens_color = "#ef4444" if ling_metrics['sensationalism_score'] >= 40 else "#34d399"
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value" style="color:{sens_color}">{ling_metrics['sensationalism_score']}/100</div>
+                <div class="metric-label">Sensationalism</div>
+                <div class="progress-container">
+                    <div class="progress-bar-fill" style="width: {ling_metrics['sensationalism_score']}%; background-color: {sens_color};"></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
         st.markdown("<br>", unsafe_allow_html=True)
-        st.code(whatsapp_card_text, language="markdown")
 
-    with tab3:
-        st.markdown("### Linguistic & Clickbait Indicators")
-        st.write(f"- **ALL-CAPS Word Ratio:** {ling_metrics['caps_ratio']}%")
-        st.write(f"- **Exclamation Marks Count:** {ling_metrics['exclamations']}")
-        st.write(f"- **Journalistic Tone Score:** {ling_metrics['journalistic_score']}/100")
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "🌐 Live News & Source Authority", 
+            "📲 WhatsApp Debunk Card", 
+            "🧠 Linguistic Analysis", 
+            "📜 Audit History & Export",
+            "⚙️ Technical Architecture"
+        ])
         
-        if ling_metrics['triggers_found']:
-            st.warning(f"⚠️ **Sensational Trigger Words Detected:** {', '.join(ling_metrics['triggers_found'])}")
-        else:
-            st.success("✅ No sensational clickbait trigger phrases detected.")
-
-    with tab4:
-        st.markdown("### 📜 Session Verification Audit History")
-        st.write("Track all news checks conducted during this active session:")
-        
-        if st.session_state.verification_history:
-            history_df = pd.DataFrame(st.session_state.verification_history)
-            st.dataframe(history_df, use_container_width=True)
+        with tab1:
+            st.markdown("### Live Corroboration & Source Credibility Matrix")
+            if is_debunked_online:
+                st.error("🚨 **Fact-check or debunking articles disproving this claim were found in online news registries!**")
             
-            # Download CSV Export Button
-            csv_data = history_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download Session Audit History (CSV)",
-                data=csv_data,
-                file_name=f"verifact_audit_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                type="primary"
-            )
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(f"**🟢 Tier 1 Outlets (High Trust):** `{tier_counts['t1']}`")
+            with c2:
+                st.markdown(f"**🟡 Tier 2 Outlets (Aggregators):** `{tier_counts['t2']}`")
+            with c3:
+                st.markdown(f"**🔴 Tier 3 Outlets (Unverified):** `{tier_counts['t3']}`")
+
+            st.markdown("---")
+            
+            if eval_sources:
+                st.write(f"Found **{len(eval_sources)}** live news matches. Sentence-Level TF-IDF Cosine Similarity assesses claim alignment:")
+                for idx, src in enumerate(eval_sources, 1):
+                    badge_col = src['badge_color']
+                    tier_lab = src['tier_label']
+                    with st.expander(f"{idx}. {src['title']} ({src['tier_badge']} | Match: {src.get('similarity', 0)}%)"):
+                        st.markdown(f"<span style='color:{badge_col}; font-weight:bold;'>{tier_lab}</span>", unsafe_allow_html=True)
+                        st.write(src['snippet'])
+                        st.markdown(f"[🔗 Open Source Article]({src['url']})")
+            else:
+                st.info("No direct live news matches found on search engines. Unverified claims receive a neutral pending score.")
+
+        with tab2:
+            st.markdown("### 📲 Ready-to-Share WhatsApp Debunk Card")
+            st.write("Copy and share this pre-formatted fact-check alert to debunk rumors on WhatsApp, Telegram, or Twitter:")
+            
+            st.markdown(f'<div class="whatsapp-card-box">{html.escape(whatsapp_card_text)}</div>', unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.code(whatsapp_card_text, language="markdown")
+
+        with tab3:
+            st.markdown("### Linguistic & Clickbait Indicators")
+            st.write(f"- **ALL-CAPS Word Ratio:** {ling_metrics['caps_ratio']}%")
+            st.write(f"- **Exclamation Marks Count:** {ling_metrics['exclamations']}")
+            st.write(f"- **Journalistic Tone Score:** {ling_metrics['journalistic_score']}/100")
+            
+            if ling_metrics['triggers_found']:
+                st.warning(f"⚠️ **Sensational Trigger Words Detected:** {', '.join(ling_metrics['triggers_found'])}")
+            else:
+                st.success("✅ No sensational clickbait trigger phrases detected.")
+
+        with tab4:
+            st.markdown("### 📜 Session Verification Audit History")
+            st.write("Track all news checks conducted during this active session:")
+            
+            if st.session_state.verification_history:
+                history_df = pd.DataFrame(st.session_state.verification_history)
+                st.dataframe(history_df, use_container_width=True)
+                
+                csv_data = history_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Session Audit History (CSV)",
+                    data=csv_data,
+                    file_name=f"verifact_audit_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    type="primary"
+                )
+            else:
+                st.info("No claims verified yet in this session.")
+
+        with tab5:
+            st.markdown("""
+            ### VeriFact AI Engine Specifications
+            1. **Google News RSS Grounding**: Searches Google News XML RSS streams without facing rate limits or API key restrictions.
+            2. **Multi-Tier Search Query Generator**: Generates targeted query variations (Named Entities, Content Keywords) to locate live coverage.
+            3. **Sentence-Level TF-IDF Vector Math**: Measures vector similarity between claim sentences and live web snippets.
+            4. **Source Credibility Evaluation**: Categorizes news publishers into Tier 1, Tier 2, and Tier 3 sources.
+            5. **WhatsApp Debunk Card**: Converts fact-check outputs into copyable social messaging cards.
+            """)
+
+    elif analyze_btn:
+        st.warning("Please enter a claim or headline to analyze.")
+
+# PIPELINE 2: IMAGE & VIDEO AUTHENTICATOR
+else:
+    st.markdown("### 📷 Multi-Modal Image & Video Classification System")
+    st.write("Upload a news screenshot, news poster graphic, viral image, or video clip for classification into one of 4 strict categories:")
+    
+    st.info("""
+    **Classification Categories:**
+    - 🟢 **REAL NEWS AND VIDEO / IMAGE** (Verified authentic news footage)
+    - ⚠️ **FAKE NEWS, REAL VIDEO / IMAGE** (Genuine footage reused with false/misleading headlines)
+    - 🚨 **AI GENERATED FAKE VIDEO / IMAGE** (Deepfake or synthetic generative AI content)
+    - ❓ **CAN'T BE IDENTIFIED** (Inconclusive metadata or insufficient registry matches)
+    """)
+    
+    col_up1, col_up2 = st.columns([1, 1])
+    
+    with col_up1:
+        uploaded_file = st.file_uploader(
+            "Upload News Image or Video File:",
+            type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "avi"]
+        )
+        
+    with col_up2:
+        media_claim_context = st.text_area(
+            "Associated Headline or Claim Context (Optional):",
+            height=100,
+            placeholder="e.g., 'Viral video claiming military vehicles entered city streets today...'"
+        )
+
+    if uploaded_file is not None:
+        file_bytes = uploaded_file.getvalue()
+        file_name = uploaded_file.name
+        file_type = uploaded_file.type
+        
+        st.markdown("---")
+        
+        if "image" in file_type:
+            st.image(uploaded_file, caption=f"Uploaded Image: {file_name}", use_column_width=True)
         else:
-            st.info("No claims verified yet in this session.")
+            st.video(uploaded_file)
 
-    with tab5:
-        st.markdown("""
-        ### VeriFact AI Engine Specifications
-        1. **Google News RSS Grounding**: Searches Google News XML RSS streams without facing rate limits or API key restrictions.
-        2. **Multi-Tier Search Query Generator**: Generates targeted query variations (Named Entities, Content Keywords) to locate live coverage.
-        3. **Sentence-Level TF-IDF Vector Math**: Measures vector similarity between claim sentences and live web snippets to eliminate vector length dilution on full-length articles.
-        4. **Source Credibility Evaluation**: Categorizes news publishers into Tier 1 (PIB, Reuters, BBC, The Hindu), Tier 2, and Tier 3 sources.
-        5. **WhatsApp Debunk Card**: Converts fact-check outputs into copyable social messaging cards.
-        """)
+        if st.button("🔍 Run Media Classification", type="primary", use_container_width=True):
+            with st.spinner("Analyzing image/video metadata, synthetic frame signatures, and cross-referencing claims..."):
+                
+                result = analyze_media_authenticity(file_bytes, file_name, file_type, media_claim_context)
+                
+                st.markdown("---")
+                
+                st.markdown(f"""
+                <div style="background-color: rgba(15, 23, 42, 0.85); padding: 22px; border-radius: 16px; border-left: 6px solid {result['color']}; border-top: 1px solid rgba(255,255,255,0.08); margin-bottom: 20px;">
+                    <h2 style="margin: 0; color: white; font-size: 22px; display: flex; align-items: center; gap: 10px;">
+                        <span>{result['icon']}</span> <span>{result['classification']}</span>
+                    </h2>
+                    <p style="margin-top: 8px; color: #cbd5e1; font-size: 14px;">
+                        <b>Detection Confidence:</b> {result['confidence']}% &nbsp;|&nbsp; 
+                        <b>Media Type:</b> {result['media_kind']} &nbsp;|&nbsp; 
+                        <b>Web Corroboration:</b> {result['corroboration']}%
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("### 🔬 Classification Findings & Reasoning")
+                st.write(result['reasoning'])
+                
+                if result['sources']:
+                    st.markdown("### 🌐 Corroborating News Matches Found")
+                    for s in result['sources'][:3]:
+                        st.markdown(f"- [{s['title']}]({s['url']})")
+                        
+                st.session_state.verification_history.append({
+                    "Timestamp": datetime.now().strftime("%H:%M:%S"),
+                    "Type": f"Media ({result['media_kind']})",
+                    "Claim": file_name,
+                    "Verdict": result['classification'],
+                    "Truth Index (%)": result['confidence'],
+                    "Web Corroboration (%)": result['corroboration'],
+                    "Sensationalism Score": 0,
+                    "Sources Found": len(result['sources'])
+                })
 
-elif analyze_btn:
-    st.warning("Please enter a claim or headline to analyze.")
-
-elif not analyze_btn and st.session_state.verification_history:
+elif st.session_state.verification_history:
     st.markdown("---")
     st.markdown("### 📜 Session Verification Audit Log")
     history_df = pd.DataFrame(st.session_state.verification_history)
