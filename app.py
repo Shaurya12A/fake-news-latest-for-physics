@@ -9,6 +9,13 @@ from datetime import datetime
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+# Optional Fallback Import for DuckDuckGo
+try:
+    from duckduckgo_search import DDGS
+    HAS_DDG = True
+except ImportError:
+    HAS_DDG = False
+
 # ==========================================
 # PAGE CONFIGURATION & DARK THEME CSS
 # ==========================================
@@ -19,7 +26,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Glassmorphism Styling
+# Custom Command Center Glassmorphism Styling
 st.markdown("""
 <style>
     /* Dark Theme Base */
@@ -139,7 +146,7 @@ def evaluate_source_authority(source_name):
     return {"tier": 3, "tier_label": "Tier 3: Unverified / Social Source", "badge_color": "#fbbf24"}
 
 # ==========================================
-# GOOGLE NEWS RSS GROUNDING ENGINE
+# MULTI-TIER WEB SEARCH ENGINE (RSS + DDG FALLBACK)
 # ==========================================
 def extract_search_queries(text):
     clean_text = re.sub(r'[^\w\s]', ' ', text)
@@ -181,6 +188,31 @@ def fetch_google_news_rss(query):
         return items
     except Exception:
         return []
+
+def fetch_duckduckgo_news(query):
+    if not HAS_DDG:
+        return []
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.news(query, max_results=5))
+            items = []
+            for r in results:
+                items.append({
+                    'title': r.get('title', ''),
+                    'snippet': r.get('body', r.get('title', '')),
+                    'link': r.get('url', ''),
+                    'source': r.get('source', 'DuckDuckGo News'),
+                    'date': r.get('date', '')
+                })
+            return items
+    except Exception:
+        return []
+
+def fetch_live_news_with_fallback(query):
+    articles = fetch_google_news_rss(query)
+    if not articles:
+        articles = fetch_duckduckgo_news(query)
+    return articles
 
 # ==========================================
 # SENTENCE-LEVEL TF-IDF MATCHING
@@ -234,7 +266,7 @@ def analyze_linguistic_risk(text):
     return sensationalism_score, journalistic_score
 
 # ==========================================
-# SIDEBAR NAVIGATION & BENCHMARKS
+# SIDEBAR NAVIGATION & SETTINGS
 # ==========================================
 with st.sidebar:
     st.markdown("<h2 style='color:#34d399; margin-bottom:0;'>🛡️ VeriFact AI</h2>", unsafe_allow_html=True)
@@ -247,20 +279,6 @@ with st.sidebar:
         index=0
     )
     
-    st.divider()
-    
-    # Live Interactive Calibration Sliders
-    with st.expander("🎛️ Live Prediction Calibration Sliders", expanded=True):
-        st.markdown("<p style='font-size:0.75rem; color:#94a3b8;'>Adjust threshold metrics to tune decision boundary precision:</p>", unsafe_allow_html=True)
-        
-        sim_threshold = st.slider("Min TF-IDF Cosine Sim (Real)", 0.05, 0.40, 0.14, 0.01)
-        corrob_threshold = st.slider("Min Web Corroboration %", 10, 70, 35, 5)
-        sensational_threshold = st.slider("Sensationalism Trigger (Fake)", 10, 80, 35, 5)
-        journalistic_threshold = st.slider("Min Journalistic Tone Score", 10, 80, 40, 5)
-        
-        if st.button("🔄 Reset Sliders to Defaults"):
-            st.rerun()
-
     st.divider()
     st.markdown("### ⚡ Test Claim Benchmarks")
     if st.button("🔴 Fake: Plastic Currency Rumor"):
@@ -296,16 +314,16 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
         run_btn = st.button("🔍 Run Deep Fact Check", type="primary", use_container_width=True)
         
     if run_btn and user_input.strip():
-        with st.spinner("Querying Google News RSS & Running Vector Matching..."):
+        with st.spinner("Querying Live News Feeds (Google News RSS + DuckDuckGo Fallback) & Running Vector Matching..."):
             
-            # Step 1: Queries
+            # Step 1: Query Extraction & Multi-Source Search
             queries = extract_search_queries(user_input)
             all_articles = []
             for q in queries:
-                fetched = fetch_google_news_rss(q)
+                fetched = fetch_live_news_with_fallback(q)
                 all_articles.extend(fetched)
                 
-            # Deduplicate
+            # Deduplicate Articles
             seen = set()
             unique_articles = []
             for a in all_articles:
@@ -313,38 +331,38 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     seen.add(a['title'])
                     unique_articles.append(a)
                     
-            # Step 2: Vector Similarity & Scoring Calibration
+            # Step 2: Vector Similarity Calculation
             raw_max_sim, best_match = calculate_sentence_similarity(user_input, unique_articles)
-            corroboration_pct = min(int(raw_max_sim * 300), 100) if raw_max_sim >= 0.10 else min(int(raw_max_sim * 100), 15)
+            corroboration_pct = min(int(raw_max_sim * 250), 100) if raw_max_sim >= 0.08 else min(int(raw_max_sim * 100), 20)
             
-            # Step 3: Linguistic Analysis
+            # Step 3: Linguistic Risk Scanner
             sensationalism_score, journalistic_score = analyze_linguistic_risk(user_input)
             
-            # Step 4: Calibrated Multi-Factor Decision Tree using User Sliders
-            if raw_max_sim >= sim_threshold or corroboration_pct >= corrob_threshold or (raw_max_sim >= max(sim_threshold - 0.04, 0.08) and journalistic_score >= journalistic_threshold):
+            # Step 4: Restored Original Decision Logic
+            if corroboration_pct >= 20 or raw_max_sim >= 0.10:
                 verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
                 status_class = "badge-real"
-                truth_index = min(max(corroboration_pct + 20, 75), 98)
-                summary = f"Matches live news reporting (found via '{best_match['source'] if best_match else 'Verified Outlet'}'). High textual alignment detected."
-            elif sensationalism_score >= sensational_threshold and raw_max_sim < sim_threshold:
+                truth_index = max(corroboration_pct, 80)
+                summary = f"Matches live coverage from '{best_match['source'] if best_match else 'Global News'}'. High textual alignment detected."
+            elif sensationalism_score >= 40:
                 verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
                 status_class = "badge-fake"
-                truth_index = max(100 - sensationalism_score - 20, 10)
+                truth_index = max(100 - sensationalism_score, 10)
                 summary = "Exhibits heavy emotional clickbait indicators and lacks grounding across verified news outlets."
             else:
                 verdict = "⚠️ UNVERIFIED / PROBABLE FAKE NEWS"
                 status_class = "badge-warning"
                 truth_index = 35
-                summary = "No direct corroborating reports found on live news feeds. Claim remains unverified."
+                summary = "Formal phrasing detected, but no corroborating reports found on live news feeds."
                 
-            # Store last analyzed claim for feedback pipeline
+            # Store Last Analyzed Claim for Active Learning Pipeline
             st.session_state.last_analyzed_claim = {
                 'type': 'Text Claim',
                 'content': user_input,
                 'predicted_verdict': verdict
             }
 
-            # Log into session
+            # Log Session History
             st.session_state.verification_history.append({
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'claim': user_input[:60] + "...",
@@ -353,7 +371,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                 'corroboration': f"{corroboration_pct}%"
             })
             
-            # Dashboard Display
+            # Dashboard Verdict Header
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown(f"""
             <div class="command-card">
@@ -380,8 +398,8 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                 
             st.markdown("<br>", unsafe_allow_html=True)
             
-            # Tabs for Detailed Breakdown
-            tab1, tab2, tab3 = st.tabs(["📲 WhatsApp Debunk Card", "🟢 Live News & Source Authority", "📊 Active Slider Parameters & Raw Data"])
+            # Detailed Breakdown Tabs
+            tab1, tab2, tab3 = st.tabs(["📲 WhatsApp Debunk Card", "🟢 Live News & Source Authority", "📊 Analytics Details"])
             
             with tab1:
                 st.markdown("#### Ready-to-Share WhatsApp Fact-Check Briefing")
@@ -412,7 +430,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                         </div>
                         """, unsafe_allow_html=True)
                 else:
-                    st.info("No direct corroborating headlines found on live Google News feeds.")
+                    st.info("No direct corroborating headlines found on live news feeds.")
                     
             with tab3:
                 st.json({
@@ -420,12 +438,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     "sensationalism_score": sensationalism_score,
                     "journalistic_score": journalistic_score,
                     "extracted_queries": queries,
-                    "active_calibration_sliders": {
-                        "sim_threshold": sim_threshold,
-                        "corrob_threshold": corrob_threshold,
-                        "sensational_threshold": sensational_threshold,
-                        "journalistic_threshold": journalistic_threshold
-                    }
+                    "duckduckgo_fallback_enabled": HAS_DDG
                 })
 
 # ==========================================
@@ -454,13 +467,12 @@ elif analysis_mode == "📷 Image & Video Authenticator":
             if st.button("⚡ Authenticate Media File", type="primary"):
                 with st.spinner("Analyzing audio-visual stream, compression artifacts, and search grounding..."):
                     
-                    # Search Grounding if Context Given
                     corroborated = False
                     if media_context.strip():
                         q = extract_search_queries(media_context)[0]
-                        articles = fetch_google_news_rss(q)
+                        articles = fetch_live_news_with_fallback(q)
                         sim, _ = calculate_sentence_similarity(media_context, articles)
-                        if sim >= sim_threshold:
+                        if sim >= 0.10:
                             corroborated = True
 
                     # 3-Class Media Classification Logic
@@ -490,14 +502,14 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                         ai_score = 35
                         manipulation_score = 60
 
-                    # Store last analyzed claim for feedback pipeline
+                    # Store Last Analyzed Claim for Active Learning Pipeline
                     st.session_state.last_analyzed_claim = {
                         'type': 'Media File',
                         'content': media_context if media_context else filename,
                         'predicted_verdict': media_verdict
                     }
 
-                    # Log into Session
+                    # Log Session History
                     st.session_state.verification_history.append({
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'claim': f"[{'Video' if is_video else 'Image'}] " + (media_context[:40] if media_context else filename),
@@ -523,7 +535,7 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                         st.markdown(f"""<div class="metric-box"><div class="metric-value">{"HIGH" if corroborated else "LOW"}</div><div class="metric-label">Live Corroboration</div></div>""", unsafe_allow_html=True)
 
 # ==========================================
-# PIPELINE 3: MODEL FEEDBACK & ACTIVE LEARNING
+# PIPELINE 3: MODEL FEEDBACK & ACTIVE LEARNING HUB
 # ==========================================
 else:
     st.markdown("### 🧠 Model Feedback & Active Learning Hub")
@@ -546,7 +558,6 @@ else:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Form to Submit Feedback
     col_fb1, col_fb2 = st.columns([1, 1])
 
     with col_fb1:
@@ -603,7 +614,6 @@ else:
 
     st.divider()
 
-    # Feedback Dataset Table & Export
     st.markdown("### 📊 Collected Model Training & Feedback Dataset")
     if st.session_state.feedback_dataset:
         df_feedback = pd.DataFrame(st.session_state.feedback_dataset)
@@ -635,3 +645,4 @@ if st.session_state.verification_history:
         file_name="verifact_audit_history.csv",
         mime="text/csv"
     )
+```eof
