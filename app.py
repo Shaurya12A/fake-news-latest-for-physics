@@ -9,7 +9,6 @@ pasted text) and produces:
   - Clickbait Score
   - Web Corroboration Score (live search via DuckDuckGo + Google News RSS)
   - Journalistic Tone Score
-  - AI-Generated-Text Likelihood Score  (catches "calm, journalistic" AI fakes)
   - Composite Truth Index + verdict
   - Session history with CSV / JSON download
 
@@ -26,14 +25,6 @@ pip install streamlit requests beautifulsoup4 feedparser duckduckgo-search \
 RUN
 --------------------------------------------------------------------------
 streamlit run app.py
-
---------------------------------------------------------------------------
-IMPORTANT DISCLAIMER
---------------------------------------------------------------------------
-This tool produces HEURISTIC, EXPLAINABLE scores based on linguistic
-patterns and live search corroboration. It is a decision-support aid, not
-a certified fact-checker. Always cross-check important claims with primary
-sources and established fact-checking organizations.
 ==============================================================================
 """
 
@@ -83,43 +74,39 @@ except ImportError:
 # LEXICONS / REFERENCE DATA  (starter lists - expand freely)
 # ==============================================================================
 
+# Trimmed to genuinely hyperbolic/tabloid words. Common words that show up
+# constantly in ordinary, legitimate journalism ("slams", "blast", "crisis",
+# "chaos", "panic", "erupts", "brutal") were removed - they were causing
+# real, sober news reporting to get mis-scored as sensationalist.
 SENSATIONAL_WORDS = {
-    "shocking", "bombshell", "explosive", "outrageous", "devastating", "slams",
-    "destroys", "terrifying", "horrific", "chilling", "stunning", "unbelievable",
-    "miracle", "secret", "exposed", "scandal", "meltdown", "catastrophe", "chaos",
-    "panic", "furious", "blast", "epic", "insane", "crisis", "bizarre", "savage",
-    "brutal", "slammed", "erupts", "nightmare", "doom", "apocalyptic", "explodes",
+    "shocking", "bombshell", "explosive", "outrageous", "unbelievable",
+    "miracle", "scandalous", "meltdown", "apocalyptic", "doomsday", "insane",
+    "jaw-dropping", "mind-blowing", "mind-boggling", "terrifying", "horrifying",
+    "sensational", "astonishing", "secretly", "you won't believe",
 }
 
+# Each pattern carries its own weight. Ambiguous patterns that legitimate
+# journalism also uses often (e.g. explainer headlines ending in "?", or
+# "Here's why...") were removed or down-weighted so real news stops
+# getting flagged as clickbait.
 CLICKBAIT_PATTERNS = [
-    r"\byou won'?t believe\b",
-    r"\bshocking\b",
-    r"\bwhat happens next\b",
-    r"\bnumber \d+ will\b",
-    r"\bthis is why\b",
-    r"\bwill blow your mind\b",
-    r"\bcan'?t even\b",
-    r"^\s*\d+\s+(reasons|ways|things|facts|signs|secrets|times)",
-    r"\bhere'?s why\b",
-    r"\bthe truth about\b",
-    r"\bgone (wrong|viral)\b",
-    r"\bthis one trick\b",
-    r"\bdoctors hate\b",
-    r"\bwhat (they|he|she) did next\b",
-    r"\?\s*$",
+    (r"\byou won'?t believe\b", 22),
+    (r"\bwhat happens next\b", 18),
+    (r"\bnumber \d+ will\b", 18),
+    (r"\bwill blow your mind\b", 20),
+    (r"\bcan'?t even\b", 12),
+    (r"^\s*\d+\s+(reasons|ways|things|facts|signs|secrets|times)", 12),
+    (r"\bthis one (weird|simple)?\s*trick\b", 22),
+    (r"\bdoctors hate\b", 22),
+    (r"\bwhat (they|he|she) did next\b", 16),
+    (r"\bgone (wrong|viral)\b", 10),
+    (r"\bbroke the internet\b", 14),
 ]
 
-# Attribution / hedging phrases used by tone + AI-likelihood analyzers
+# Attribution phrases used by the tone analyzer
 ATTRIBUTION_PHRASES = [
     "according to", "said", "stated", "reported", "told", "confirmed",
     "announced", "claims", "alleges", "sources say", "officials said",
-]
-
-AI_HEDGE_PHRASES = [
-    "furthermore", "moreover", "additionally", "in conclusion", "overall",
-    "in summary", "as a result", "therefore", "consequently",
-    "it is important to note", "it should be noted", "in today's world",
-    "in recent years", "plays a crucial role", "plays a vital role",
 ]
 
 # Small illustrative starter lists - NOT exhaustive. Extend for production use.
@@ -210,25 +197,29 @@ def extract_article_from_url(url):
 # ==============================================================================
 
 def compute_clickbait_score(title):
+    """
+    Returns (score, hits). If no headline is available, returns (0.0, [])
+    rather than treating the absence of a headline as a red flag.
+    """
     if not title or not title.strip():
         return 0.0, []
     t = title.strip()
     score = 0
     hits = []
 
-    for pat in CLICKBAIT_PATTERNS:
+    for pat, weight in CLICKBAIT_PATTERNS:
         if re.search(pat, t, re.IGNORECASE | re.MULTILINE):
-            score += 12
+            score += weight
             hits.append(pat)
 
     exclaim = t.count("!")
     if exclaim:
-        score += min(exclaim * 8, 16)
+        score += min(exclaim * 6, 12)
         hits.append(f"{exclaim} exclamation mark(s)")
 
     caps_words = re.findall(r"\b[A-Z]{3,}\b", t)
     if caps_words:
-        score += min(len(caps_words) * 8, 16)
+        score += min(len(caps_words) * 6, 12)
         hits.append(f"{len(caps_words)} ALL-CAPS word(s)")
 
     return round(min(score, 100), 1), hits
@@ -330,73 +321,7 @@ def analyze_journalistic_tone(text):
 
 
 # ==============================================================================
-# 5. AI-GENERATED-TEXT LIKELIHOOD (heuristic - flags "calm but fake" AI news)
-# ==============================================================================
-
-def analyze_ai_generation_likelihood(text):
-    result = {
-        "score": 0.0,
-        "burstiness": None,
-        "type_token_ratio": None,
-        "specific_detail_density": None,
-        "hedge_density": None,
-    }
-    if not text or not text.strip():
-        return result
-
-    sentences = split_sentences(text)
-    lengths = [len(s.split()) for s in sentences if s.strip()]
-    words = re.findall(r"\b\w+\b", text.lower())
-
-    if not lengths or not words:
-        return result
-
-    mean_len = sum(lengths) / len(lengths)
-    variance = sum((l - mean_len) ** 2 for l in lengths) / len(lengths)
-    stdev = variance ** 0.5
-    burstiness = (stdev / mean_len) if mean_len > 0 else 0.0
-
-    ttr = len(set(words)) / len(words)
-
-    numbers = len(re.findall(r"\b\d{1,4}\b", text))
-    proper_nouns = len(re.findall(r"(?<!^)(?<![.!?]\s)\b[A-Z][a-z]{2,}\b", text))
-    specific_density = (numbers + proper_nouns) / len(words)
-
-    hedge_count = sum(text.lower().count(h) for h in AI_HEDGE_PHRASES)
-    hedge_density = hedge_count / max(len(sentences), 1)
-
-    score = 0.0
-    # Low burstiness = uniform sentence lengths = a common LLM fingerprint
-    if burstiness < 0.35:
-        score += 30
-    elif burstiness < 0.5:
-        score += 15
-
-    if ttr < 0.35:
-        score += 25
-    elif ttr < 0.45:
-        score += 10
-
-    if specific_density < 0.01:
-        score += 25
-
-    if hedge_density > 0.15:
-        score += 20
-
-    score = min(score, 100)
-
-    result.update({
-        "score": round(score, 1),
-        "burstiness": round(burstiness, 3),
-        "type_token_ratio": round(ttr, 3),
-        "specific_detail_density": round(specific_density, 4),
-        "hedge_density": round(hedge_density, 3),
-    })
-    return result
-
-
-# ==============================================================================
-# 6. LIVE WEB SEARCH  (DuckDuckGo + Google News RSS)
+# 5. LIVE WEB SEARCH  (DuckDuckGo + Google News RSS)
 # ==============================================================================
 
 def duckduckgo_search(query, num=8):
@@ -436,12 +361,25 @@ def google_news_rss_search(query, num=8):
 
 
 # ==============================================================================
-# 7. WEB CORROBORATION SCORE
+# 6. WEB CORROBORATION SCORE
 # ==============================================================================
 
 def compute_web_corroboration(headline, body_text):
+    """
+    Returns a dict with a 'status' field that distinguishes:
+      - 'no_query'          : nothing to search with (no headline/text at all)
+      - 'search_unavailable': the search backends returned literally nothing -
+                               this usually means DuckDuckGo/RSS is rate-limited,
+                               blocked, or unreachable, NOT that the story is fake.
+                               Treated as NEUTRAL (does not penalize the article).
+      - 'no_confident_match' : search worked but nothing matched closely enough.
+      - 'corroborated'       : one or more matching sources were found.
+    """
     if not headline or not headline.strip():
-        return {"score": 0.0, "matches": [], "num_distinct_domains": 0, "credible_sources": 0}
+        return {
+            "score": 50.0, "matches": [], "num_distinct_domains": 0,
+            "credible_sources": 0, "status": "no_query",
+        }
 
     ddg_results = duckduckgo_search(headline, num=8)
     rss_results = google_news_rss_search(headline, num=8)
@@ -457,7 +395,15 @@ def compute_web_corroboration(headline, body_text):
             unique.append(r)
 
     if not unique:
-        return {"score": 0.0, "matches": [], "num_distinct_domains": 0, "credible_sources": 0}
+        # The search itself came back empty-handed (both DuckDuckGo and Google
+        # News RSS). A real query almost always returns *something*, so this
+        # most likely means search access is currently unavailable (rate limit,
+        # network block, library issue) rather than proof the story is fake.
+        # Score neutrally instead of penalizing the article.
+        return {
+            "score": 50.0, "matches": [], "num_distinct_domains": 0,
+            "credible_sources": 0, "status": "search_unavailable",
+        }
 
     reference_doc = f"{headline} {body_text[:800]}"
     candidate_docs = [f"{u['title']} {u.get('snippet', '')}" for u in unique]
@@ -482,7 +428,7 @@ def compute_web_corroboration(headline, body_text):
     credible_count = 0
     for u, sim in zip(unique, similarities):
         domain = get_domain(u.get("link", ""))
-        if sim >= 0.12:
+        if sim >= 0.10:
             is_credible = domain in CREDIBLE_DOMAINS
             if is_credible:
                 credible_count += 1
@@ -498,6 +444,18 @@ def compute_web_corroboration(headline, body_text):
     distinct_domains = len({m["domain"] for m in matches})
     avg_sim = (sum(m["similarity"] for m in matches) / len(matches)) if matches else 0.0
 
+    if not matches:
+        # Search worked (we got candidates back) but none resembled the
+        # article closely enough to count as corroboration. This is a
+        # genuinely useful signal (unlike search_unavailable above), but we
+        # still keep it moderate rather than zeroing the article out, since
+        # very fresh or niche/local stories can legitimately have few
+        # indexed matches yet.
+        return {
+            "score": 30.0, "matches": [], "num_distinct_domains": 0,
+            "credible_sources": 0, "status": "no_confident_match",
+        }
+
     score = min(100.0, distinct_domains * 15 + credible_count * 10 + avg_sim * 40)
 
     return {
@@ -505,11 +463,12 @@ def compute_web_corroboration(headline, body_text):
         "matches": matches,
         "num_distinct_domains": distinct_domains,
         "credible_sources": credible_count,
+        "status": "corroborated",
     }
 
 
 # ==============================================================================
-# 8. DOMAIN CREDIBILITY CHECK
+# 7. DOMAIN CREDIBILITY CHECK
 # ==============================================================================
 
 def check_domain_credibility(url):
@@ -524,22 +483,31 @@ def check_domain_credibility(url):
 
 
 # ==============================================================================
-# 9. TRUTH INDEX (composite score)
+# 8. TRUTH INDEX (composite score)
 # ==============================================================================
 
-def compute_truth_index(corroboration_score, sensationalism_score, clickbait_score,
-                         ai_likelihood_score, domain_modifier):
+def compute_truth_index(corroboration_score, corroboration_status, sensationalism_score,
+                         clickbait_score, domain_modifier):
+    """
+    Composite score. Corroboration is the strongest signal, but when the
+    search backend simply returned no data (corroboration_status ==
+    'search_unavailable') that is NOT treated as evidence against the
+    article - it's treated as neutral, so real news doesn't get dragged
+    down to "fake" just because a free search API had a bad moment.
+    """
     base = 50.0
-    base += (corroboration_score - 50) * 0.35
-    base -= sensationalism_score * 0.20
-    base -= clickbait_score * 0.15
-    base -= ai_likelihood_score * 0.15
+
+    if corroboration_status != "search_unavailable":
+        base += (corroboration_score - 50) * 0.45
+
+    base -= sensationalism_score * 0.12
+    base -= clickbait_score * 0.10
     base += domain_modifier
     base = max(0.0, min(100.0, base))
 
-    if base >= 70:
+    if base >= 65:
         verdict = "Likely Reliable"
-    elif base >= 45:
+    elif base >= 40:
         verdict = "Mixed / Needs Verification"
     else:
         verdict = "Likely Unreliable / Fake"
@@ -548,28 +516,44 @@ def compute_truth_index(corroboration_score, sensationalism_score, clickbait_sco
 
 
 # ==============================================================================
-# 10. FULL ANALYSIS PIPELINE
+# 9. FULL ANALYSIS PIPELINE
 # ==============================================================================
 
 def run_full_analysis(title, text, url=""):
+    """
+    `title` is optional. If left blank, we derive a search query from the
+    opening sentence of the article text so web corroboration can still run -
+    but the clickbait score is only computed against a real headline, since
+    clickbait is fundamentally a headline-framing phenomenon.
+    """
+    title = (title or "").strip()
+    text = text or ""
+
+    derived_query = ""
+    if not title and text.strip():
+        sentences = split_sentences(text)
+        derived_query = sentences[0][:150] if sentences else text[:150]
+
+    query_for_search = title if title else derived_query
+
     clickbait_score, clickbait_hits = compute_clickbait_score(title)
     sensationalism_score, sensational_words_found = compute_sensationalism_score(text)
     tone = analyze_journalistic_tone(text)
-    ai_likelihood = analyze_ai_generation_likelihood(text)
-    corroboration = compute_web_corroboration(title, text)
+    corroboration = compute_web_corroboration(query_for_search, text)
     domain_info = check_domain_credibility(url)
 
     truth_index, verdict = compute_truth_index(
         corroboration_score=corroboration["score"],
+        corroboration_status=corroboration.get("status", "corroborated"),
         sensationalism_score=sensationalism_score,
         clickbait_score=clickbait_score,
-        ai_likelihood_score=ai_likelihood["score"],
         domain_modifier=domain_info["modifier"],
     )
 
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "title": title,
+        "derived_query": derived_query,
         "url": url,
         "text_preview": (text[:300] + "...") if len(text) > 300 else text,
         "clickbait_score": clickbait_score,
@@ -577,7 +561,6 @@ def run_full_analysis(title, text, url=""):
         "sensationalism_score": sensationalism_score,
         "sensational_words_found": sensational_words_found,
         "tone": tone,
-        "ai_likelihood": ai_likelihood,
         "corroboration": corroboration,
         "domain_info": domain_info,
         "truth_index": truth_index,
@@ -586,22 +569,22 @@ def run_full_analysis(title, text, url=""):
 
 
 # ==============================================================================
-# 11. SESSION HISTORY EXPORT HELPERS
+# 10. SESSION HISTORY EXPORT HELPERS
 # ==============================================================================
 
 def flatten_record(rec):
     """Flatten a nested analysis record into a single-level dict for CSV export."""
     return {
         "timestamp": rec["timestamp"],
-        "title": rec["title"],
+        "title": rec["title"] or "(no headline provided)",
         "url": rec["url"],
         "verdict": rec["verdict"],
         "truth_index": rec["truth_index"],
         "clickbait_score": rec["clickbait_score"],
         "sensationalism_score": rec["sensationalism_score"],
         "journalistic_tone_score": rec["tone"]["score"],
-        "ai_generation_likelihood": rec["ai_likelihood"]["score"],
         "web_corroboration_score": rec["corroboration"]["score"],
+        "corroboration_status": rec["corroboration"].get("status", ""),
         "distinct_corroborating_domains": rec["corroboration"]["num_distinct_domains"],
         "credible_sources_found": rec["corroboration"]["credible_sources"],
         "domain_credibility_note": rec["domain_info"]["label"],
@@ -624,7 +607,7 @@ def history_to_json(history):
 
 
 # ==============================================================================
-# 12. STREAMLIT UI
+# 11. STREAMLIT UI
 # ==============================================================================
 
 def render_score_bar(label, value, help_text="", higher_is_better=True):
@@ -640,33 +623,11 @@ def main():
     if "history" not in st.session_state:
         st.session_state.history = []
 
-    st.title("🕵️ Fake News & AI-Generated News Detector")
+    st.title("🕵️ Fake News Detector")
     st.caption(
-        "Free-tooling only: live web corroboration via DuckDuckGo + Google News RSS. "
-        "Heuristic scoring - use as a decision-support aid, not a verdict."
+        "Live web corroboration via DuckDuckGo + Google News RSS, plus clickbait, "
+        "sensationalism, and journalistic-tone scoring."
     )
-
-    with st.expander("⚠️ Read before using", expanded=False):
-        st.write(
-            "This tool estimates likelihoods using linguistic patterns and live search "
-            "corroboration. It cannot definitively prove an article true or false. Always "
-            "verify important claims against primary sources and established fact-checkers."
-        )
-        deps_missing = []
-        if not DDGS_AVAILABLE:
-            deps_missing.append("duckduckgo-search")
-        if not SKLEARN_AVAILABLE:
-            deps_missing.append("scikit-learn")
-        if not TEXTSTAT_AVAILABLE:
-            deps_missing.append("textstat")
-        if not TEXTBLOB_AVAILABLE:
-            deps_missing.append("textblob")
-        if deps_missing:
-            st.warning(
-                "Optional packages not installed (some features degraded): "
-                + ", ".join(deps_missing)
-                + ". Install with: pip install " + " ".join(deps_missing)
-            )
 
     tab_analyze, tab_history = st.tabs(["🔍 Analyze", "🗂️ Session History"])
 
@@ -696,14 +657,17 @@ def main():
                 st.session_state["_pending_analysis"] = (title, text, url.strip())
 
         else:
-            title = st.text_input("Headline / Title", placeholder="Enter the article headline")
+            title = st.text_input(
+                "Headline / Title (optional)",
+                placeholder="Enter the article headline - or leave blank to auto-detect from the text",
+            )
             text = st.text_area("Article text", height=250, placeholder="Paste the full article text here...")
             analyze_clicked = st.button("Analyze", type="primary")
             if analyze_clicked:
                 if not text.strip():
                     st.error("Please paste some article text to analyze.")
                     st.stop()
-                st.session_state["_pending_analysis"] = (title or text[:80], text, "")
+                st.session_state["_pending_analysis"] = (title.strip(), text, "")
 
         if "_pending_analysis" in st.session_state:
             p_title, p_text, p_url = st.session_state.pop("_pending_analysis")
@@ -715,7 +679,10 @@ def main():
         if "_last_result" in st.session_state:
             r = st.session_state["_last_result"]
             st.divider()
-            st.subheader(f"Results for: {r['title'] or '(untitled)'}")
+            display_title = r["title"] or r.get("derived_query") or "(untitled)"
+            st.subheader(f"Results for: {display_title}")
+            if not r["title"]:
+                st.caption("No headline was provided - the search query above was auto-detected from the article text.")
 
             verdict_color = {
                 "Likely Reliable": "green",
@@ -724,7 +691,7 @@ def main():
             }.get(r["verdict"], "gray")
             st.markdown(f"### Truth Index: **{r['truth_index']}/100** — :{verdict_color}[{r['verdict']}]")
 
-            c1, c2, c3, c4, c5 = st.columns(5)
+            c1, c2, c3, c4 = st.columns(4)
             with c1:
                 render_score_bar("Sensationalism", r["sensationalism_score"],
                                   "Higher = more emotionally-charged language")
@@ -737,9 +704,6 @@ def main():
             with c4:
                 render_score_bar("Journalistic Tone", r["tone"]["score"],
                                   "Higher = more neutral, attributed, quote-supported style")
-            with c5:
-                render_score_bar("AI-Generation Likelihood", r["ai_likelihood"]["score"],
-                                  "Higher = text shows statistical fingerprints of LLM generation")
 
             st.markdown(f"**Domain check:** {r['domain_info']['label']}")
 
@@ -753,10 +717,8 @@ def main():
                 st.markdown("**Tone analysis details:**")
                 st.json(r["tone"])
 
-                st.markdown("**AI-generation heuristic details:**")
-                st.json(r["ai_likelihood"])
-
             with st.expander("🌐 Corroborating sources found on the live web"):
+                status = r["corroboration"].get("status", "")
                 matches = r["corroboration"]["matches"]
                 if matches:
                     for m in matches:
@@ -765,12 +727,22 @@ def main():
                             f"- [{m['title']}]({m['link']}) — `{m['domain']}` "
                             f"(similarity {m['similarity']:.2f}) {badge}"
                         )
-                else:
-                    st.write(
-                        "No corroborating sources found via DuckDuckGo / Google News RSS. "
-                        "This could mean the story is unverified, very recent, or niche - "
-                        "or that search access is currently unavailable."
+                elif status == "search_unavailable":
+                    st.info(
+                        "DuckDuckGo and Google News RSS both returned no results for this "
+                        "query right now - this usually means the free search backend is "
+                        "temporarily rate-limited or unreachable, not that the story is "
+                        "unverified. The Truth Index has NOT been penalized for this. "
+                        "Try again shortly for a live corroboration check."
                     )
+                elif status == "no_confident_match":
+                    st.write(
+                        "Search returned results, but none closely matched this story. "
+                        "This can genuinely indicate the story is unverified/niche - or it "
+                        "may just be very recent and not yet widely indexed."
+                    )
+                else:
+                    st.write("No corroboration data available for this query.")
 
     # -------------------------------------------------------------------
     # HISTORY TAB
