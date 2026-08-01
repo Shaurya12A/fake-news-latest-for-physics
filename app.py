@@ -9,7 +9,6 @@ from datetime import datetime
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# Optional Fallback Import for DuckDuckGo
 try:
     from duckduckgo_search import DDGS
     HAS_DDG = True
@@ -204,35 +203,74 @@ def fetch_live_news_with_fallback(query):
         articles = fetch_duckduckgo_news(query)
     return articles
 
-def calculate_sentence_similarity(claim_text, articles):
+def extract_main_words(text):
+    """
+    Extracts core nouns, proper nouns, numbers, and key content words from text,
+    filtering out stop words and general filler words.
+    """
+    stop_words = {
+        'the', 'is', 'at', 'which', 'on', 'a', 'an', 'and', 'or', 'in', 'to', 'for', 'of', 'with',
+        'that', 'this', 'it', 'from', 'by', 'as', 'are', 'was', 'were', 'been', 'be', 'have', 'has',
+        'had', 'do', 'does', 'did', 'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might',
+        'must', 'about', 'above', 'below', 'over', 'under', 'again', 'further', 'then', 'once', 'here',
+        'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most',
+        'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very',
+        'just', 'now', 'says', 'said', 'according', 'announced', 'new', 'news', 'breaking'
+    }
+    words = re.findall(r'\b[a-zA-Z0-9]+\b', text)
+    main_words = []
+    for w in words:
+        w_lower = w.lower()
+        if w_lower not in stop_words and len(w_lower) > 2:
+            main_words.append(w_lower)
+    return list(dict.fromkeys(main_words))
+
+def calculate_entity_and_vector_match(claim_text, articles):
+    """
+    Evaluates both key noun/main word overlap in a single article
+    and sentence-level TF-IDF vector similarity.
+    """
     if not articles:
-        return 0.0, None
-        
+        return 0.0, 0.0, None, [], 0
+
     sentences = [s.strip() for s in re.split(r'[.!?]\s+', claim_text) if len(s.strip()) > 10]
     if not sentences:
         sentences = [claim_text]
-        
-    snippets = [a['snippet'] for a in articles]
+
     max_sim = 0.0
+    max_overlap_ratio = 0.0
     best_match = articles[0]
-    
+    best_matched_words = []
+    total_main_words_count = 0
+
     for sentence in sentences:
-        corpus = [sentence] + snippets
-        try:
-            vectorizer = TfidfVectorizer(stop_words='english').fit_transform(corpus)
-            vectors = vectorizer.toarray()
-            sim_scores = cosine_similarity(vectors[0:1], vectors[1:])[0]
-            
-            top_idx = np.argmax(sim_scores)
-            top_score = sim_scores[top_idx]
-            
-            if top_score > max_sim:
-                max_sim = top_score
-                best_match = articles[top_idx]
-        except Exception:
+        main_words = extract_main_words(sentence)
+        if not main_words:
             continue
-            
-    return float(max_sim), best_match
+        
+        total_main_words_count = max(total_main_words_count, len(main_words))
+
+        for article in articles:
+            snippet_text = article['snippet'].lower()
+            # Check how many main words/nouns from sentence appear in THIS single article
+            matched_words = [w for w in main_words if w in snippet_text]
+            overlap_ratio = len(matched_words) / len(main_words) if main_words else 0.0
+
+            # Compute TF-IDF vector similarity for this sentence vs article snippet
+            try:
+                vectorizer = TfidfVectorizer(stop_words='english').fit_transform([sentence, article['snippet']])
+                vectors = vectorizer.toarray()
+                sim_score = float(cosine_similarity(vectors[0:1], vectors[1:2])[0][0])
+            except Exception:
+                sim_score = 0.0
+
+            if overlap_ratio > max_overlap_ratio or (overlap_ratio == max_overlap_ratio and sim_score > max_sim):
+                max_overlap_ratio = overlap_ratio
+                max_sim = sim_score
+                best_match = article
+                best_matched_words = matched_words
+
+    return float(max_overlap_ratio), float(max_sim), best_match, best_matched_words, total_main_words_count
 
 def analyze_linguistic_risk(text):
     caps_ratio = sum(1 for c in text if c.isupper()) / max(len(text), 1)
@@ -289,7 +327,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
         run_btn = st.button("🔍 Run Deep Fact Check", type="primary", use_container_width=True)
         
     if run_btn and user_input.strip():
-        with st.spinner("Querying Live News Feeds (Google News RSS + DuckDuckGo Fallback) & Running Vector Matching..."):
+        with st.spinner("Analyzing claim nouns/entities, querying live news feeds & validating single-article word match..."):
             
             # Step 1: Query Extraction & Multi-Source Search
             queries = extract_search_queries(user_input)
@@ -306,34 +344,29 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     seen.add(a['title'])
                     unique_articles.append(a)
                     
-            # Step 2: Vector Similarity Calculation
-            raw_max_sim, best_match = calculate_sentence_similarity(user_input, unique_articles)
-            corroboration_pct = min(int(raw_max_sim * 250), 100) if raw_max_sim >= 0.08 else min(int(raw_max_sim * 100), 15)
+            # Step 2: Single-Article Noun/Main Word Overlap Engine
+            overlap_ratio, raw_max_sim, best_match, matched_words, total_words = calculate_entity_and_vector_match(user_input, unique_articles)
+            corroboration_pct = int(overlap_ratio * 100)
             
             # Step 3: Linguistic Risk Scanner
             sensationalism_score, journalistic_score = analyze_linguistic_risk(user_input)
             
-            # Step 4: Strict Decision Matrix (Prevents False Real News Over-Classification)
-            if raw_max_sim >= 0.20 and sensationalism_score < 50:
+            # Step 4: Decision Tree Based on Single-Article Main Word Overlap
+            if overlap_ratio >= 0.60 or (overlap_ratio >= 0.40 and raw_max_sim >= 0.15):
                 verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
                 status_class = "badge-real"
-                truth_index = min(max(corroboration_pct, 75), 98)
-                summary = f"Matches live news coverage from '{best_match['source'] if best_match else 'Global News'}'. High textual alignment."
+                truth_index = min(int(overlap_ratio * 80 + 20), 98)
+                summary = f"Matches live coverage from '{best_match['source'] if best_match else 'Global News'}'. {len(matched_words)}/{total_words} main nouns/key terms matched in a single article."
             elif sensationalism_score >= 40:
                 verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
                 status_class = "badge-fake"
                 truth_index = max(100 - sensationalism_score, 10)
-                summary = "Exhibits heavy emotional clickbait indicators and lacks sufficient grounding across verified news outlets."
-            elif raw_max_sim >= 0.12:
-                verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
-                status_class = "badge-real"
-                truth_index = max(corroboration_pct, 65)
-                summary = f"Corroborated by reports from '{best_match['source'] if best_match else 'News Outlets'}'."
+                summary = "Exhibits heavy clickbait language and key claim nouns failed to match together in verified news reports."
             else:
                 verdict = "⚠️ UNVERIFIED / PROBABLE FAKE NEWS"
                 status_class = "badge-warning"
                 truth_index = 35
-                summary = "No strong corroborating reports found on live news feeds."
+                summary = f"Key nouns/main terms were not found together in any single verified live news report ({len(matched_words)}/{total_words} words matched)."
                 
             # Store Last Analyzed Claim for Active Learning Pipeline
             st.session_state.last_analyzed_claim = {
@@ -351,6 +384,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                 'corroboration': f"{corroboration_pct}%"
             })
             
+            # Dashboard Verdict Header
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown(f"""
             <div class="command-card">
@@ -369,7 +403,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
             with m1:
                 st.markdown(f"""<div class="metric-box"><div class="metric-value">{truth_index}%</div><div class="metric-label">Truth Index</div></div>""", unsafe_allow_html=True)
             with m2:
-                st.markdown(f"""<div class="metric-box"><div class="metric-value">{corroboration_pct}%</div><div class="metric-label">Web Corroboration</div></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div class="metric-box"><div class="metric-value">{corroboration_pct}%</div><div class="metric-label">Single Article Match</div></div>""", unsafe_allow_html=True)
             with m3:
                 st.markdown(f"""<div class="metric-box"><div class="metric-value">{journalistic_score}%</div><div class="metric-label">Journalistic Tone</div></div>""", unsafe_allow_html=True)
             with m4:
@@ -377,7 +411,6 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                 
             st.markdown("<br>", unsafe_allow_html=True)
             
-            # Detailed Breakdown Tabs
             tab1, tab2, tab3 = st.tabs(["📲 WhatsApp Debunk Card", "🟢 Live News & Source Authority", "📊 Analytics Details"])
             
             with tab1:
@@ -387,7 +420,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
 *Claim:* "{user_input[:100]}..."
 *Verdict:* {verdict}
 *Truth Index:* {truth_index}%
-*Web Corroboration:* {corroboration_pct}%
+*Single Article Word Overlap:* {corroboration_pct}%
 
 *Summary:* {summary}
 *Verified via VeriFact AI Command Center*"""
@@ -413,9 +446,11 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     
             with tab3:
                 st.json({
-                    "raw_vector_similarity": raw_max_sim,
+                    "single_article_word_overlap_ratio": overlap_ratio,
+                    "matched_key_words": matched_words,
+                    "total_key_words": total_words,
+                    "vector_cosine_similarity": raw_max_sim,
                     "sensationalism_score": sensationalism_score,
-                    "journalistic_score": journalistic_score,
                     "extracted_queries": queries,
                     "duckduckgo_fallback_enabled": HAS_DDG
                 })
@@ -447,11 +482,10 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                     if media_context.strip():
                         q = extract_search_queries(media_context)[0]
                         articles = fetch_live_news_with_fallback(q)
-                        sim, _ = calculate_sentence_similarity(media_context, articles)
-                        if sim >= 0.10:
+                        overlap, sim, _, _, _ = calculate_entity_and_vector_match(media_context, articles)
+                        if overlap >= 0.50 or sim >= 0.15:
                             corroborated = True
 
-                    # 3-Class Media Classification Logic
                     filename = uploaded_media.name.lower()
                     synthetic_keywords = ["sora", "runway", "deepfake", "pika", "midjourney", "synth", "elevenlabs"]
                     has_synthetic_tag = any(kw in filename or kw in media_context.lower() for kw in synthetic_keywords)
@@ -478,14 +512,12 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                         ai_score = 35
                         manipulation_score = 60
 
-                    # Store Last Analyzed Claim for Active Learning Pipeline
                     st.session_state.last_analyzed_claim = {
                         'type': 'Media File',
                         'content': media_context if media_context else filename,
                         'predicted_verdict': media_verdict
                     }
 
-                    # Log Session History
                     st.session_state.verification_history.append({
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'claim': f"[{'Video' if is_video else 'Image'}] " + (media_context[:40] if media_context else filename),
@@ -514,7 +546,6 @@ else:
     st.markdown("### 🧠 Model Feedback & Active Learning Hub")
     st.markdown("Provide feedback on predictions, submit ground-truth corrections, and retrain the model memory to improve prediction accuracy.")
 
-    # High Level Metrics Dashboard
     total_feedback = len(st.session_state.feedback_dataset)
     correct_count = sum(1 for item in st.session_state.feedback_dataset if item.get('is_correct') == 'Yes 👍')
     accuracy_rate = int((correct_count / max(total_feedback, 1)) * 100)
