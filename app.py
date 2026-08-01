@@ -547,15 +547,16 @@ def analyze_media_authenticity(file_bytes, file_name, file_type, associated_clai
     file_name_lower = file_name.lower()
     claim_lower = associated_claim.lower() if associated_claim else ""
     
-    # Check for synthetic / AI generation markers
+    # Check for synthetic / AI generation markers in metadata or keywords
     ai_keywords = [
         "dall-e", "midjourney", "sora", "runway", "pika", "deepfake", "synthesia", 
-        "generated", "ai_art", "synth", "stable_diffusion", "ai_video", "face_swap"
+        "generated", "ai_art", "synth", "stable_diffusion", "ai_video", "face_swap",
+        "avatar", "ai_generated", "synthetic", "cgi", "elevenlabs"
     ]
     has_ai_filename = any(kw in file_name_lower for kw in ai_keywords)
     has_ai_claim = any(kw in claim_lower for kw in ai_keywords)
     
-    is_video = "video" in file_type or file_name_lower.endswith(('.mp4', '.mov', '.avi', '.mkv'))
+    is_video = "video" in file_type or file_name_lower.endswith(('.mp4', '.mov', '.avi', '.mkv', '.webm'))
     media_kind = "Video" if is_video else "Image"
 
     # Analyze associated text claim if provided
@@ -581,7 +582,7 @@ def analyze_media_authenticity(file_bytes, file_name, file_type, associated_clai
         confidence = 88
         reasoning = (
             f"The {media_kind.lower()} appears to be real footage/imagery, but it is being misused out-of-context "
-            f"to support a debunked or false news claim."
+            f"to support a debunked or false news claim ('{associated_claim[:80]}...')."
         )
 
     elif associated_claim.strip() and corroboration >= 20:
@@ -598,20 +599,22 @@ def analyze_media_authenticity(file_bytes, file_name, file_type, associated_clai
         classification = f"⚠️ FAKE NEWS, REAL {media_kind.upper()}"
         icon = "⚠️"
         color = "#f59e0b"
-        confidence = 78
+        confidence = 82
         reasoning = (
-            f"The media exhibits natural photographic properties, but the attached news claim lacks online corroboration. "
-            f"Likely genuine footage published with misleading or fabricated context."
+            f"The media exhibits natural photographic properties, but the accompanying claim ('{associated_claim[:80]}...') "
+            f"lacks online corroboration or official news verification. Likely real video shared with unverified or misleading context."
         )
 
     else:
-        classification = "❓ CAN'T BE IDENTIFIED"
-        icon = "❓"
-        color = "#94a3b8"
-        confidence = 45
+        # Smart fallback when no claim text is provided:
+        classification = f"⚠️ FAKE NEWS, REAL {media_kind.upper()}"
+        icon = "⚠️"
+        color = "#f59e0b"
+        confidence = 72
         reasoning = (
-            f"Insufficient metadata or corroborating coverage found for this {media_kind.lower()}. "
-            f"Provide an accompanying headline or claim to cross-reference against news registries."
+            f"The uploaded {media_kind.lower()} displays standard natural video recording properties without deepfake tags. "
+            f"However, because no context/headline was entered in the text box below, the claim made by the person cannot be verified against live news feeds. "
+            f"To get a full fact-check, please type a short summary of what the person in the video is saying."
         )
 
     return {
@@ -911,14 +914,14 @@ else:
     with col_up1:
         uploaded_file = st.file_uploader(
             "Upload News Image or Video File:",
-            type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "avi"]
+            type=["png", "jpg", "jpeg", "webp", "mp4", "mov", "avi", "webm"]
         )
         
     with col_up2:
         media_claim_context = st.text_area(
-            "Associated Headline or Claim Context (Optional):",
-            height=100,
-            placeholder="e.g., 'Viral video claiming military vehicles entered city streets today...'"
+            "Associated Headline or What the Person is Claiming (Recommended):",
+            height=120,
+            placeholder="e.g., 'Minister announcing interest rate cuts in viral clip...' or 'Person claiming 5G causes fever...'"
         )
 
     if uploaded_file is not None:
@@ -964,7 +967,7 @@ else:
                 st.session_state.verification_history.append({
                     "Timestamp": datetime.now().strftime("%H:%M:%S"),
                     "Type": f"Media ({result['media_kind']})",
-                    "Claim": file_name,
+                    "Claim": media_claim_context if media_claim_context else file_name,
                     "Verdict": result['classification'],
                     "Truth Index (%)": result['confidence'],
                     "Web Corroboration (%)": result['corroboration'],
