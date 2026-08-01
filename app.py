@@ -248,6 +248,20 @@ with st.sidebar:
     )
     
     st.divider()
+    
+    # Live Interactive Calibration Sliders
+    with st.expander("🎛️ Live Prediction Calibration Sliders", expanded=True):
+        st.markdown("<p style='font-size:0.75rem; color:#94a3b8;'>Adjust threshold metrics to tune decision boundary precision:</p>", unsafe_allow_html=True)
+        
+        sim_threshold = st.slider("Min TF-IDF Cosine Sim (Real)", 0.05, 0.40, 0.14, 0.01)
+        corrob_threshold = st.slider("Min Web Corroboration %", 10, 70, 35, 5)
+        sensational_threshold = st.slider("Sensationalism Trigger (Fake)", 10, 80, 35, 5)
+        journalistic_threshold = st.slider("Min Journalistic Tone Score", 10, 80, 40, 5)
+        
+        if st.button("🔄 Reset Sliders to Defaults"):
+            st.rerun()
+
+    st.divider()
     st.markdown("### ⚡ Test Claim Benchmarks")
     if st.button("🔴 Fake: Plastic Currency Rumor"):
         st.session_state.test_claim = "The Reserve Bank of India has announced that all paper currency notes will be replaced with plastic bank notes next month."
@@ -306,13 +320,13 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
             # Step 3: Linguistic Analysis
             sensationalism_score, journalistic_score = analyze_linguistic_risk(user_input)
             
-            # Step 4: Calibrated Multi-Factor Decision Tree
-            if raw_max_sim >= 0.14 or corroboration_pct >= 35 or (raw_max_sim >= 0.10 and journalistic_score >= 40):
+            # Step 4: Calibrated Multi-Factor Decision Tree using User Sliders
+            if raw_max_sim >= sim_threshold or corroboration_pct >= corrob_threshold or (raw_max_sim >= max(sim_threshold - 0.04, 0.08) and journalistic_score >= journalistic_threshold):
                 verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
                 status_class = "badge-real"
                 truth_index = min(max(corroboration_pct + 20, 75), 98)
                 summary = f"Matches live news reporting (found via '{best_match['source'] if best_match else 'Verified Outlet'}'). High textual alignment detected."
-            elif sensationalism_score >= 35 and raw_max_sim < 0.14:
+            elif sensationalism_score >= sensational_threshold and raw_max_sim < sim_threshold:
                 verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
                 status_class = "badge-fake"
                 truth_index = max(100 - sensationalism_score - 20, 10)
@@ -367,7 +381,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
             st.markdown("<br>", unsafe_allow_html=True)
             
             # Tabs for Detailed Breakdown
-            tab1, tab2, tab3 = st.tabs(["📲 WhatsApp Debunk Card", "🟢 Live News & Source Authority", "📊 Analytics Details"])
+            tab1, tab2, tab3 = st.tabs(["📲 WhatsApp Debunk Card", "🟢 Live News & Source Authority", "📊 Active Slider Parameters & Raw Data"])
             
             with tab1:
                 st.markdown("#### Ready-to-Share WhatsApp Fact-Check Briefing")
@@ -405,7 +419,13 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     "raw_vector_similarity": raw_max_sim,
                     "sensationalism_score": sensationalism_score,
                     "journalistic_score": journalistic_score,
-                    "extracted_queries": queries
+                    "extracted_queries": queries,
+                    "active_calibration_sliders": {
+                        "sim_threshold": sim_threshold,
+                        "corrob_threshold": corrob_threshold,
+                        "sensational_threshold": sensational_threshold,
+                        "journalistic_threshold": journalistic_threshold
+                    }
                 })
 
 # ==========================================
@@ -440,7 +460,7 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                         q = extract_search_queries(media_context)[0]
                         articles = fetch_google_news_rss(q)
                         sim, _ = calculate_sentence_similarity(media_context, articles)
-                        if sim >= 0.10:
+                        if sim >= sim_threshold:
                             corroborated = True
 
                     # 3-Class Media Classification Logic
