@@ -278,6 +278,27 @@ def contains_debunk_signal(article):
     combined = (article.get('title', '') + ' ' + article.get('snippet', '')).lower()
     return any(sig in combined for sig in DEBUNK_SIGNAL_WORDS)
 
+# Well-documented, recurring hoax patterns that keep resurfacing (WhatsApp
+# forwards etc.) and get repeatedly fact-checked by PIB/AltNews/BOOM. Live
+# news search alone is unreliable for these: the debunking articles are
+# often old and don't surface in a fresh RSS query, while unrelated real
+# news sharing the same entity names (e.g. "RBI") can accidentally score
+# high word-overlap. Each entry requires ALL of `all`, AT LEAST ONE of
+# `any`, and AT LEAST ONE of `context` to be present in the claim text.
+KNOWN_HOAX_PATTERNS = [
+    {'all': ['plastic'], 'any': ['currency', 'notes', 'banknote', 'banknotes'], 'context': ['rbi', 'reserve bank']},
+    {'all': ['whatsapp'], 'any': ['charge', 'paid', 'fee', 'subscription'], 'context': ['whatsapp', 'message']},
+    {'all': ['5g'], 'any': ['virus', 'covid', 'coronavirus'], 'context': ['spread', 'cause', 'link']},
+    {'all': ['2000'], 'any': ['chip', 'gps', 'tracking', 'nano'], 'context': ['note', 'currency']},
+]
+
+def matches_known_hoax(text):
+    lt = text.lower()
+    for pattern in KNOWN_HOAX_PATTERNS:
+        if all(k in lt for k in pattern['all']) and any(k in lt for k in pattern['any']) and any(k in lt for k in pattern['context']):
+            return True
+    return False
+
 def calculate_entity_and_vector_match(claim_text, articles):
     """
     Evaluates both key noun/main word overlap in a single article
@@ -413,14 +434,27 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
             # share the same key nouns - so check the matched article's own
             # language for explicit debunk/denial signals before trusting overlap.
             debunk_flag = contains_debunk_signal(best_match)
+
+            # Step 4b: Known Recurring Hoax Check
+            # Some claims are well-documented, repeatedly fact-checked hoaxes
+            # that live search can't reliably catch (old debunk articles don't
+            # surface; unrelated real news with the same entity names can
+            # falsely inflate word overlap). These take priority over the
+            # search-based signals below.
+            known_hoax_flag = matches_known_hoax(user_input)
             
             # Step 5: Re-calibrated Decision Matrix
-            if debunk_flag and overlap_ratio >= 0.20:
+            if known_hoax_flag:
+                verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
+                status_class = "badge-fake"
+                truth_index = 5
+                summary = "This matches a well-documented, recurring misinformation pattern that has been repeatedly fact-checked and debunked by official sources (e.g. PIB Fact Check)."
+            elif debunk_flag and overlap_ratio >= 0.20:
                 verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
                 status_class = "badge-fake"
                 truth_index = max(100 - int(overlap_ratio * 100) - 20, 5)
                 summary = f"A matching report from '{best_match['source'] if best_match else 'a news source'}' explicitly identifies this claim as false, denied, or debunked."
-            elif overlap_ratio >= 0.30 or raw_max_sim >= 0.15 or (overlap_ratio >= 0.22 and journalistic_score >= 20):
+            elif overlap_ratio >= 0.35 or (overlap_ratio >= 0.20 and raw_max_sim >= 0.15) or (overlap_ratio >= 0.22 and journalistic_score >= 20):
                 verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
                 status_class = "badge-real"
                 truth_index = min(int(max(overlap_ratio, raw_max_sim) * 100 + 40), 98)
@@ -520,6 +554,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     "vector_cosine_similarity": raw_max_sim,
                     "sensationalism_score": sensationalism_score,
                     "debunk_signal_detected": debunk_flag,
+                    "known_hoax_pattern_matched": known_hoax_flag,
                     "extracted_queries": queries,
                     "duckduckgo_fallback_enabled": HAS_DDG
                 })
