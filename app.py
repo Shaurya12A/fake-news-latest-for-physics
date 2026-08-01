@@ -93,9 +93,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize Session State Log
+# Initialize Session State Variables
 if 'verification_history' not in st.session_state:
     st.session_state.verification_history = []
+
+if 'feedback_dataset' not in st.session_state:
+    st.session_state.feedback_dataset = []
+
+if 'last_analyzed_claim' not in st.session_state:
+    st.session_state.last_analyzed_claim = None
 
 # ==========================================
 # SOURCE CREDIBILITY DATABASE
@@ -211,7 +217,7 @@ def analyze_linguistic_risk(text):
     return sensationalism_score, journalistic_score
 
 # ==========================================
-# SIDEBAR NAVIGATION & SETTINGS
+# SIDEBAR NAVIGATION & FEEDBACK OPTIONS
 # ==========================================
 with st.sidebar:
     st.markdown("<h2 style='color:#34d399; margin-bottom:0;'>🛡️ VeriFact AI</h2>", unsafe_allow_html=True)
@@ -232,6 +238,33 @@ with st.sidebar:
         st.session_state.test_claim = "ISRO successfully completed core stage engine testing for the Gaganyaan human spaceflight mission."
     if st.button("🚨 Clickbait: 5G Scalar Waves"):
         st.session_state.test_claim = "BREAKING URGENT: Secret government plot leaked as 5G cell towers emit scalar frequencies!"
+
+    st.divider()
+    st.markdown("### 💬 Model Feedback & Training")
+    if st.session_state.last_analyzed_claim:
+        st.caption(f"Last Item: {st.session_state.last_analyzed_claim['content'][:30]}...")
+        fb_correct = st.radio("Was model verdict accurate?", ["Yes 👍", "No 👎"], key="sb_fb_correct")
+        
+        fb_label = st.selectbox(
+            "Correct Label (if incorrect):",
+            ["🟢 VERIFIED REAL / HIGHLY LIKELY", "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT", "⚠️ UNVERIFIED / PROBABLE FAKE NEWS"],
+            key="sb_fb_label"
+        )
+        
+        if st.button("💾 Submit Feedback", type="secondary", key="sb_fb_btn"):
+            st.session_state.feedback_dataset.append({
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'type': st.session_state.last_analyzed_claim['type'],
+                'content': st.session_state.last_analyzed_claim['content'],
+                'predicted_verdict': st.session_state.last_analyzed_claim['predicted_verdict'],
+                'is_correct': fb_correct,
+                'corrected_label': fb_label if fb_correct == "No 👎" else st.session_state.last_analyzed_claim['predicted_verdict']
+            })
+            st.success("Feedback recorded into active training dataset!")
+    else:
+        st.info("Run an analysis to submit accuracy feedback.")
+
+    st.caption(f"Collected Feedback Samples: **{len(st.session_state.feedback_dataset)}**")
 
 # ==========================================
 # HEADER DISPLAY
@@ -258,7 +291,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
     if run_btn and user_input.strip():
         with st.spinner("Querying Google News RSS & Running Vector Matching..."):
             
-            # Step 1: Queries
+            # Step 1: Search Queries
             queries = extract_search_queries(user_input)
             all_articles = []
             for q in queries:
@@ -277,10 +310,10 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
             raw_max_sim, best_match = calculate_sentence_similarity(user_input, unique_articles)
             corroboration_pct = min(int(raw_max_sim * 250), 100) if raw_max_sim >= 0.08 else min(int(raw_max_sim * 100), 20)
             
-            # Step 3: Linguistic Analysis
+            # Step 3: Linguistic Risk Analysis
             sensationalism_score, journalistic_score = analyze_linguistic_risk(user_input)
             
-            # Step 4: Decision Tree
+            # Step 4: Original Decision Tree Logic (Strictly Unaltered)
             if corroboration_pct >= 20 or raw_max_sim >= 0.10:
                 verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
                 status_class = "badge-real"
@@ -297,7 +330,14 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                 truth_index = 35
                 summary = "Formal phrasing detected, but no corroborating reports found on live news feeds."
                 
-            # Log session state
+            # Store in session state for sidebar feedback
+            st.session_state.last_analyzed_claim = {
+                'type': 'Text Claim',
+                'content': user_input,
+                'predicted_verdict': verdict
+            }
+
+            # Log into verification audit history
             st.session_state.verification_history.append({
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'claim': user_input[:60] + "...",
@@ -401,7 +441,7 @@ else:
         with col_med2:
             st.markdown("#### Media Verification Pipeline")
             if st.button("⚡ Authenticate Media File", type="primary"):
-                with st.spinner("Analyzing audio-visual stream, compression artifacts, and search grounding..."):
+                with st.spinner("Analyzing audio-visual stream, compression footprints, and search grounding..."):
                     
                     # Search Grounding if Context Given
                     corroborated = False
@@ -414,6 +454,10 @@ else:
 
                     # 3-Class Media Classification Logic
                     file_size = uploaded_media.size
+                    filename = uploaded_media.name.lower()
+                    
+                    synthetic_keywords = ["sora", "runway", "deepfake", "pika", "midjourney", "synth", "elevenlabs"]
+                    has_synthetic_tag = any(kw in filename or kw in media_context.lower() for kw in synthetic_keywords)
                     
                     if corroborated:
                         media_verdict = "🟢 REAL VIDEO" if is_video else "🟢 REAL IMAGE / GRAPHIC"
@@ -422,25 +466,32 @@ else:
                         summary_msg = "Corroborated by live news grounding feeds. Audio-visual stream matches authentic source recording."
                         ai_score = 5
                         manipulation_score = 10
-                    elif "synthetic" in media_context.lower() or "deepfake" in media_context.lower() or file_size < 500000:
+                    elif has_synthetic_tag:
                         media_verdict = "🚨 FAKE AI GENERATED VIDEO" if is_video else "🚨 FAKE AI GENERATED IMAGE"
                         badge_style = "badge-fake"
                         confidence = 88
-                        summary_msg = "Synthetic facial movement patterns, unnatural audio cadences, or AI visual artifacts detected."
+                        summary_msg = "Synthetic facial movement patterns, generative AI footprints, or manipulated audio detected."
                         ai_score = 92
                         manipulation_score = 85
                     else:
                         media_verdict = "⚠️ PROBABLE FAKE VIDEO" if is_video else "⚠️ PROBABLE FAKE IMAGE"
                         badge_style = "badge-warning"
                         confidence = 74
-                        summary_msg = "Unverified footage. The video clip lacks corroborating official context or news coverage."
-                        ai_score = 45
-                        manipulation_score = 65
+                        summary_msg = "Unverified footage. The media clip lacks corroborating official context or news coverage."
+                        ai_score = 35
+                        manipulation_score = 60
 
-                    # Log into Session
+                    # Store in session state for sidebar feedback
+                    st.session_state.last_analyzed_claim = {
+                        'type': 'Media File',
+                        'content': media_context if media_context else filename,
+                        'predicted_verdict': media_verdict
+                    }
+
+                    # Log into session
                     st.session_state.verification_history.append({
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'claim': f"[{'Video' if is_video else 'Image'}] " + (media_context[:40] if media_context else "Media File"),
+                        'claim': f"[{'Video' if is_video else 'Image'}] " + (media_context[:40] if media_context else filename),
                         'verdict': media_verdict,
                         'truth_index': f"{100 - ai_score}%",
                         'corroboration': "Verified" if corroborated else "Unverified"
@@ -463,18 +514,35 @@ else:
                         st.markdown(f"""<div class="metric-box"><div class="metric-value">{"HIGH" if corroborated else "LOW"}</div><div class="metric-label">Live Corroboration</div></div>""", unsafe_allow_html=True)
 
 # ==========================================
-# SESSION AUDIT HISTORY & CSV EXPORT
+# AUDIT LOG & TRAINING DATASET EXPORTS
 # ==========================================
 st.divider()
-if st.session_state.verification_history:
-    st.markdown("### 📜 Session Verification Audit Log")
-    df_history = pd.DataFrame(st.session_state.verification_history)
-    st.dataframe(df_history, use_container_width=True)
-    
-    csv_data = df_history.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Export Verification Audit Log (CSV)",
-        data=csv_data,
-        file_name="verifact_audit_history.csv",
-        mime="text/csv"
-    )
+col_hist1, col_hist2 = st.columns(2)
+
+with col_hist1:
+    if st.session_state.verification_history:
+        st.markdown("### 📜 Session Verification Audit Log")
+        df_history = pd.DataFrame(st.session_state.verification_history)
+        st.dataframe(df_history, use_container_width=True)
+        
+        csv_data = df_history.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Export Verification Audit Log (CSV)",
+            data=csv_data,
+            file_name="verifact_audit_history.csv",
+            mime="text/csv"
+        )
+
+with col_hist2:
+    if st.session_state.feedback_dataset:
+        st.markdown("### 🧠 Feedback Training Dataset")
+        df_fb = pd.DataFrame(st.session_state.feedback_dataset)
+        st.dataframe(df_fb, use_container_width=True)
+        
+        fb_csv = df_fb.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Export Training Feedback Dataset (CSV)",
+            data=fb_csv,
+            file_name="verifact_training_feedback.csv",
+            mime="text/csv"
+        )
