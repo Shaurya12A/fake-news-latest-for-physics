@@ -9,9 +9,6 @@ from datetime import datetime
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ==========================================
-# PAGE CONFIGURATION & DARK THEME CSS
-# ==========================================
 st.set_page_config(
     page_title="VeriFact AI — Misinformation Command Center",
     page_icon="🛡️",
@@ -19,7 +16,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Command Center Glassmorphism Styling
+# Custom Glassmorphism Styling
 st.markdown("""
 <style>
     /* Dark Theme Base */
@@ -279,18 +276,17 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     
             # Step 2: Vector Similarity
             raw_max_sim, best_match = calculate_sentence_similarity(user_input, unique_articles)
-            corroboration_pct = min(int(raw_max_sim * 250), 100) if raw_max_sim >= 0.08 else min(int(raw_max_sim * 100), 20)
+            corroboration_pct = min(int(raw_max_sim * 250), 100) if raw_max_sim >= 0.12 else min(int(raw_max_sim * 100), 20)
             
             # Step 3: Linguistic Analysis
             sensationalism_score, journalistic_score = analyze_linguistic_risk(user_input)
             
-            # Step 4: Strict Decision Tree Logic (100% Unaltered)
-            if corroboration_pct >= 20 or raw_max_sim >= 0.10:
+            if raw_max_sim >= 0.28 and corroboration_pct >= 35:
                 verdict = "🟢 VERIFIED REAL / HIGHLY LIKELY"
                 status_class = "badge-real"
-                truth_index = max(corroboration_pct, 80)
+                truth_index = max(corroboration_pct, 82)
                 summary = f"Matches live coverage from '{best_match['source'] if best_match else 'Global News'}'. High textual alignment detected."
-            elif sensationalism_score >= 40:
+            elif sensationalism_score >= 35:
                 verdict = "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT"
                 status_class = "badge-fake"
                 truth_index = max(100 - sensationalism_score, 10)
@@ -299,7 +295,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                 verdict = "⚠️ UNVERIFIED / PROBABLE FAKE NEWS"
                 status_class = "badge-warning"
                 truth_index = 35
-                summary = "Formal phrasing detected, but no corroborating reports found on live news feeds."
+                summary = "Formal phrasing detected, but no exact corroborating reports found on live news feeds."
                 
             # Store last analyzed claim for feedback pipeline
             st.session_state.last_analyzed_claim = {
@@ -414,7 +410,7 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                         q = extract_search_queries(media_context)[0]
                         articles = fetch_google_news_rss(q)
                         sim, _ = calculate_sentence_similarity(media_context, articles)
-                        if sim >= 0.10:
+                        if sim >= 0.12:
                             corroborated = True
 
                     # 3-Class Media Classification Logic
@@ -505,7 +501,6 @@ else:
     with col_fb1:
         st.markdown("#### 💬 Submit Accuracy Feedback")
         
-        # Option to use last claim or custom claim
         if st.session_state.last_analyzed_claim:
             last_text = st.session_state.last_analyzed_claim['content']
             last_verdict = st.session_state.last_analyzed_claim['predicted_verdict']
