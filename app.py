@@ -124,7 +124,7 @@ TEXT_MODEL_PATH = os.path.join(DATA_DIR, "text_learned_model.pkl")
 MEDIA_MODEL_PATH = os.path.join(DATA_DIR, "media_learned_model.pkl")
 
 TEXT_FEATURE_KEYS = ['overlap_ratio', 'raw_max_sim', 'sensationalism_score', 'journalistic_score', 'debunk_flag', 'known_hoax_flag', 'nli_contradiction_score', 'is_factcheck_source']
-MEDIA_FEATURE_KEYS = ['ai_score', 'manipulation_score', 'corroborated', 'ai_signature_found', 'is_video']
+MEDIA_FEATURE_KEYS = ['ai_score', 'manipulation_score', 'corroborated', 'ai_signature_found', 'is_video', 'ml_deepfake_score_raw']
 
 # Minimum bar before the learned model is trusted to DRIVE the primary
 # verdict instead of just being shown as an advisory note. Both conditions
@@ -707,16 +707,58 @@ def analyze_linguistic_risk(text):
     return sensationalism_score, journalistic_score
 
 # --- Media forensics -------------------------------------------------------
-# These are genuine, file-content-based checks (not text matching). They are
-# still lightweight heuristics, not a trained deepfake-detection model - see
-# the caveats surfaced in the UI. But unlike the old logic, they actually
-# look at the uploaded bytes and produce a signal even with zero user text.
+# These are genuine, file-content-based checks (not text matching). Some are
+# lightweight heuristics (EXIF, ELA, frequency analysis); one (below) is an
+# actual pretrained deepfake-detection classifier. All degrade gracefully if
+# their dependency isn't installed - see the caveats surfaced in the UI, and
+# in chat: even the strongest of these (the ML classifier) is evidence, not
+# proof - a 2025 benchmark (Deepfake-Eval-2024) found open-source deepfake
+# detectors lose roughly half their claimed accuracy on real in-the-wild
+# content versus the curated academic sets they're usually scored on.
 
 AI_GENERATOR_TAGS = [
     'stable diffusion', 'midjourney', 'dall-e', 'dalle', 'dall·e', 'firefly',
     'sora', 'runway', 'pika labs', 'comfyui', 'automatic1111', 'invokeai',
     'leonardo.ai', 'ideogram', 'flux', 'imagen', 'trainedalgorithmicmedia'
 ]
+
+try:
+    from transformers import pipeline as hf_image_pipeline
+    HAS_DEEPFAKE_CLF = True
+except ImportError:
+    HAS_DEEPFAKE_CLF = False
+
+@st.cache_resource(show_spinner="Loading local deepfake image classifier (one-time)...")
+def get_deepfake_classifier():
+    """
+    ViT-based binary real/fake image classifier (prithivMLmods/Deep-Fake-
+    Detector-v2-Model), loaded via the standard transformers image-
+    classification pipeline - no custom architecture code needed. ~330MB
+    download, one-time. Returns None (never raises) if transformers isn't
+    installed or the model fails to load, so the app degrades to the
+    heuristic-only signals below.
+    """
+    if not HAS_DEEPFAKE_CLF:
+        return None
+    try:
+        return hf_image_pipeline('image-classification', model="prithivMLmods/Deep-Fake-Detector-v2-Model")
+    except Exception:
+        return None
+
+def compute_ml_deepfake_score(pil_image):
+    """Returns a 0-1 'fake' probability from the pretrained classifier, or
+    None if unavailable. Never raises."""
+    clf = get_deepfake_classifier()
+    if clf is None:
+        return None
+    try:
+        results = clf(pil_image)
+        for r in results:
+            if 'fake' in r.get('label', '').lower() or 'deepfake' in r.get('label', '').lower():
+                return float(r['score'])
+        return None
+    except Exception:
+        return None
 
 def analyze_image_forensics(file_bytes):
     """
@@ -737,6 +779,9 @@ def analyze_image_forensics(file_bytes):
          standard, real forensic technique (not something invented for this
          app) - though it mainly catches splicing/editing, not high-quality
          pure AI generation, which can be internally consistent.
+      4. Pretrained ML deepfake classifier - see compute_ml_deepfake_score.
+         The strongest single signal here when available, but still an
+         estimate, not proof - see the module-level caveat above.
     Returns a dict of scores/flags; never raises - falls back to neutral
     values with a note if the file can't be parsed.
     """
@@ -747,6 +792,7 @@ def analyze_image_forensics(file_bytes):
         'has_camera_exif': False,
         'ai_signature_found': None,
         'ela_score': None,
+        'ml_deepfake_score': None,
         'parse_error': None,
     }
 
@@ -797,6 +843,10 @@ def analyze_image_forensics(file_bytes):
         result['ela_mean_error'] = round(mean_error, 2)
         result['ela_high_error_ratio'] = round(high_error_pixel_ratio, 3)
 
+        # 3. Pretrained ML deepfake classifier (optional dependency)
+        ml_score = compute_ml_deepfake_score(rgb_img)
+        result['ml_deepfake_score'] = int(ml_score * 100) if ml_score is not None else None
+
     except Exception as e:
         result['parse_error'] = str(e)
 
@@ -817,17 +867,25 @@ def analyze_video_forensics(file_bytes, filename_hint="upload.mp4"):
          not a trained deepfake classifier - it will miss high-quality
          modern generative video and can false-positive on legitimately
          shaky or low-light footage.
+      3. Pretrained ML deepfake classifier - same image classifier as
+         images, applied to a SMALLER frame sample (max 5, vs 12 for the
+         sharpness check) since it's much more compute-heavy per frame -
+         this keeps per-upload latency reasonable. Scores are averaged
+         across sampled frames.
     Returns a dict of scores/flags; never raises.
     """
     import subprocess
     import tempfile
     import os
     import json as _json
+    from PIL import Image as PILImage
 
     result = {
         'encoder_tag': None,
         'frame_sharpness_std': None,
         'frame_count_sampled': 0,
+        'ml_deepfake_score': None,
+        'ml_frames_sampled': 0,
         'parse_error': None,
     }
 
@@ -856,6 +914,7 @@ def analyze_video_forensics(file_bytes, filename_hint="upload.mp4"):
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
         sample_count = min(12, total_frames) if total_frames > 0 else 0
         sharpness_values = []
+        sampled_frames_bgr = []
 
         if sample_count > 1:
             indices = np.linspace(0, total_frames - 1, sample_count).astype(int)
@@ -867,6 +926,7 @@ def analyze_video_forensics(file_bytes, filename_hint="upload.mp4"):
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
                 sharpness_values.append(lap_var)
+                sampled_frames_bgr.append(frame)
         cap.release()
 
         if len(sharpness_values) > 1:
@@ -876,6 +936,23 @@ def analyze_video_forensics(file_bytes, filename_hint="upload.mp4"):
             # differently-exposed clips
             result['frame_sharpness_std'] = round(std_s / mean_s, 3) if mean_s > 0 else None
             result['frame_count_sampled'] = len(sharpness_values)
+
+        # 3. Pretrained ML deepfake classifier on a smaller frame subsample
+        if sampled_frames_bgr and HAS_DEEPFAKE_CLF:
+            ml_sample_indices = np.linspace(0, len(sampled_frames_bgr) - 1, min(5, len(sampled_frames_bgr))).astype(int)
+            ml_scores = []
+            for i in ml_sample_indices:
+                try:
+                    rgb_frame = cv2.cvtColor(sampled_frames_bgr[int(i)], cv2.COLOR_BGR2RGB)
+                    pil_frame = PILImage.fromarray(rgb_frame)
+                    s = compute_ml_deepfake_score(pil_frame)
+                    if s is not None:
+                        ml_scores.append(s)
+                except Exception:
+                    continue
+            if ml_scores:
+                result['ml_deepfake_score'] = int(np.mean(ml_scores) * 100)
+                result['ml_frames_sampled'] = len(ml_scores)
 
     except Exception as e:
         result['parse_error'] = str(e)
@@ -1158,7 +1235,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
 elif analysis_mode == "📷 Image & Video Authenticator":
     st.markdown("### 📷 Image & Video Authenticator Engine")
     st.markdown("Upload a video (`.mp4`, `.mov`) or news screenshot (`.jpg`, `.png`) to evaluate authenticity against deepfake signals, synthetic audio, and live news grounding.")
-    st.caption("⚠️ These checks (EXIF metadata, Error Level Analysis, frame-sharpness consistency) are lightweight forensic heuristics, not a trained deepfake-detection model. They can be evaded by high-quality modern generative video, and can misfire on legitimately low-quality or heavily-compressed real footage. Treat results as a lead for further checking, not a final verdict.")
+    st.caption("⚠️ This combines lightweight forensic heuristics (EXIF metadata, Error Level Analysis, frame-sharpness consistency) with a pretrained deepfake-detection classifier where available. None of this is proof of authenticity or manipulation. A 2025 benchmark (Deepfake-Eval-2024) found open-source deepfake detectors lose roughly half their claimed accuracy on real in-the-wild content versus the curated datasets they're normally scored on - treat every result here as a lead for further checking, never a final verdict.")
     
     uploaded_media = st.file_uploader("Choose Video or Image File:", type=["mp4", "mov", "avi", "jpg", "jpeg", "png", "webp"])
     media_context = st.text_input("Associated Claim Context (Optional):", placeholder="e.g. 'Viral video claiming official statement announced today'")
@@ -1217,6 +1294,16 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                                 forensic_notes.append(f"Frame sharpness consistency variance: {sharp_cv} (sampled {forensics.get('frame_count_sampled', 0)} frames)")
                             else:
                                 forensic_notes.append("Not enough frames could be sampled for a frame-consistency check.")
+                            ml_score = forensics.get('ml_deepfake_score')
+                            if ml_score is not None:
+                                # Strongest single signal when available - takes over ai_score,
+                                # but caveat prominently (see module-level note): even the best
+                                # open-source deepfake detectors lose roughly half their claimed
+                                # accuracy on real in-the-wild content per 2025 benchmarking.
+                                ai_score = ml_score
+                                forensic_notes.append(f"Pretrained deepfake classifier: {ml_score}% fake-probability (averaged over {forensics.get('ml_frames_sampled', 0)} sampled frames) - treat as evidence, not proof; real-world accuracy is meaningfully lower than academic benchmarks.")
+                            elif not HAS_DEEPFAKE_CLF:
+                                forensic_notes.append("Pretrained deepfake classifier not available (transformers not installed) - falling back to the frame-sharpness heuristic only.")
                     else:
                         forensics = analyze_image_forensics(media_bytes)
                         if forensics.get('parse_error'):
@@ -1229,6 +1316,12 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                             if not forensics.get('has_camera_exif'):
                                 forensic_notes.append("No camera EXIF metadata (Make/Model/GPS/timestamp) found - consistent with, but not proof of, AI generation or a screenshot.")
                             ai_score = 30 if forensics.get('has_camera_exif') else 55
+                            ml_score = forensics.get('ml_deepfake_score')
+                            if ml_score is not None:
+                                ai_score = ml_score
+                                forensic_notes.append(f"Pretrained deepfake classifier: {ml_score}% fake-probability - treat as evidence, not proof; real-world accuracy is meaningfully lower than academic benchmarks.")
+                            elif not HAS_DEEPFAKE_CLF:
+                                forensic_notes.append("Pretrained deepfake classifier not available (transformers not installed) - falling back to EXIF/ELA heuristics only.")
 
                     ai_signature_found = forensics.get('ai_signature_found') if not is_video else None
 
@@ -1279,6 +1372,7 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                             'corroborated': int(corroborated),
                             'ai_signature_found': int(bool(ai_signature_found)),
                             'is_video': int(is_video),
+                            'ml_deepfake_score_raw': int(forensics.get('ml_deepfake_score')) if forensics.get('ml_deepfake_score') is not None else -1,
                         }
                     }
 
