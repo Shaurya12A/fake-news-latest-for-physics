@@ -1324,11 +1324,13 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                                 forensic_notes.append("Pretrained deepfake classifier not available (transformers not installed) - falling back to EXIF/ELA heuristics only.")
 
                     ai_signature_found = forensics.get('ai_signature_found') if not is_video else None
+                    ml_score = forensics.get('ml_deepfake_score')
 
                     # --- Decision combination ---
                     # Priority order: explicit AI-generator metadata signature (strongest,
-                    # near-definitive) > filename/context synthetic keyword hit > news
-                    # corroboration > forensic scores alone.
+                    # near-definitive) > filename/context synthetic keyword hit > pretrained
+                    # ML classifier's own confident read of the actual pixels > news
+                    # corroboration > forensic heuristic scores alone.
                     if ai_signature_found:
                         media_verdict = "🚨 FAKE AI GENERATED VIDEO" if is_video else "🚨 FAKE AI GENERATED IMAGE"
                         badge_style = "badge-fake"
@@ -1343,6 +1345,12 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                         summary_msg = "Filename or claim context references a known generative-AI tool."
                         ai_score = max(ai_score, 85)
                         manipulation_score = max(manipulation_score, 75)
+                    elif ml_score is not None and ml_score >= 65:
+                        media_verdict = "🚨 FAKE AI GENERATED VIDEO" if is_video else "🚨 FAKE AI GENERATED IMAGE"
+                        badge_style = "badge-fake"
+                        confidence = ml_score
+                        summary_msg = f"The pretrained deepfake classifier flagged this as {ml_score}% likely AI-generated/manipulated - this is the strongest available signal here, but still an estimate (see the caveat above), not proof."
+                        ai_score = ml_score
                     elif corroborated:
                         media_verdict = "🟢 REAL VIDEO" if is_video else "🟢 REAL IMAGE / GRAPHIC"
                         badge_style = "badge-real"
@@ -1350,6 +1358,12 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                         summary_msg = "Corroborated by live news grounding feeds, and file-level forensic checks found no strong manipulation signal."
                         ai_score = min(ai_score, 20)
                         manipulation_score = min(manipulation_score, 25)
+                    elif ml_score is not None and ml_score <= 20 and manipulation_score < 55:
+                        media_verdict = "✅ NO MANIPULATION SIGNALS DETECTED"
+                        badge_style = "badge-real"
+                        confidence = 100 - ml_score
+                        summary_msg = f"The pretrained deepfake classifier scored this only {ml_score}% likely fake, and forensic checks found no red flags. This is a positive signal, not independent confirmation of authenticity - it means nothing here looks wrong, not that the file's origin is verified."
+                        ai_score = ml_score
                     elif manipulation_score >= 55:
                         media_verdict = "⚠️ SIGNS OF MANIPULATION DETECTED" 
                         badge_style = "badge-warning"
@@ -1481,7 +1495,7 @@ else:
 
         if claim_type == 'Media File':
             label_options = [
-                "🟢 REAL VIDEO", "🟢 REAL IMAGE / GRAPHIC",
+                "🟢 REAL VIDEO", "🟢 REAL IMAGE / GRAPHIC", "✅ NO MANIPULATION SIGNALS DETECTED",
                 "🚨 FAKE AI GENERATED VIDEO", "🚨 FAKE AI GENERATED IMAGE",
                 "⚠️ SIGNS OF MANIPULATION DETECTED", "⚠️ UNVERIFIED — NO STRONG SIGNAL EITHER WAY"
             ]
