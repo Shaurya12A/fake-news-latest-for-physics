@@ -1349,7 +1349,7 @@ elif analysis_mode == "📷 Image & Video Authenticator":
             if is_video:
                 st.video(uploaded_media)
             else:
-                st.image(uploaded_media, use_column_width=True)
+                st.image(uploaded_media, use_container_width=True)
 
                 # OCR: read any text baked into the image (screenshots of fake
                 # posts/notices/tweets are one of the most common real-world
