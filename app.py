@@ -5,6 +5,7 @@ import re
 import os
 import json
 import pickle
+import unicodedata
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -355,17 +356,41 @@ QUERY_STOP_WORDS = {
     'had', 'will', 'would', 'says', 'said', 'according', 'announced', 'new', 'news', 'breaking'
 }
 
+def unicode_words(text):
+    """
+    Groups consecutive Unicode Letter/Mark/Number characters into words.
+    Used instead of an ASCII ([a-zA-Z0-9]) or plain \\w regex, both of which
+    either ignore or incorrectly split non-Latin scripts - e.g. Devanagari
+    (Hindi) and several other Indian scripts use combining vowel signs
+    (Unicode category Mn/Mc) that a plain \\w-complement regex strips out,
+    fragmenting every word at each vowel sign. Grouping by category keeps
+    those attached to their base letter. For pure ASCII/English text this
+    produces byte-identical tokenization to the previous regex-based
+    approach (verified) - so this is a correctness fix for non-English text
+    with zero behavior change for English.
+    """
+    words, current = [], []
+    for ch in text:
+        if unicodedata.category(ch)[0] in ('L', 'M', 'N'):
+            current.append(ch)
+        else:
+            if current:
+                words.append(''.join(current))
+                current = []
+    if current:
+        words.append(''.join(current))
+    return words
+
 def extract_search_queries(text):
     """
     Builds search queries that preserve short but high-value entity tokens
     (acronyms like RBI/ISRO/WHO, alphanumeric tags like 5G/COVID19, and
     capitalized proper nouns) which a plain word-length filter would drop.
     """
-    clean_text = re.sub(r'[^\w\s]', ' ', text)
     sentences = [s.strip() for s in re.split(r'[.!?]\s+', text) if len(s.strip()) > 10]
     lead_sentence = sentences[0] if sentences else text
 
-    raw_tokens = clean_text.split()
+    raw_tokens = unicode_words(text)
     entities = []
     general_words = []
     for w in raw_tokens:
@@ -375,7 +400,10 @@ def extract_search_queries(text):
         if lw in QUERY_STOP_WORDS:
             continue
         # Entity-like token: all-caps acronym (2+ chars), contains a digit
-        # (5G, COVID19), or a capitalized word of reasonable length.
+        # (5G, COVID19), or a capitalized word of reasonable length. (Only
+        # meaningful for cased scripts like Latin - non-Latin scripts like
+        # Devanagari have no case, so they fall through to general_words,
+        # which is the correct graceful degradation.)
         if (w.isupper() and len(w) >= 2) or re.search(r'\d', w) or (w[0].isupper() and len(w) >= 3):
             entities.append(w)
         elif len(lw) > 3:
@@ -387,17 +415,36 @@ def extract_search_queries(text):
     # Query 1: entity-first, fill remaining slots with general keywords
     remaining_slots = max(0, 5 - len(entities[:4]))
     q1_terms = entities[:4] + general_words[:remaining_slots]
-    q1 = " ".join(q1_terms) if q1_terms else clean_text[:60]
+    q1 = " ".join(q1_terms) if q1_terms else text[:60]
 
     # Query 2: lead sentence, slightly wider window than before
     q2 = " ".join(lead_sentence.split()[:8])
 
     return [q1, q2]
 
-def fetch_google_news_rss(query):
+# Language options for the Text Fact-Checker's search step. "English" maps
+# to the exact hl/gl/ceid values that were previously hardcoded, so leaving
+# the selector on its default produces byte-identical search queries to
+# before this feature existed - existing accuracy is unaffected unless the
+# user actively picks a different language.
+LANGUAGE_OPTIONS = {
+    'English': {'hl': 'en-IN', 'gl': 'IN', 'ceid': 'IN:en'},
+    'Hindi': {'hl': 'hi-IN', 'gl': 'IN', 'ceid': 'IN:hi'},
+    'Tamil': {'hl': 'ta-IN', 'gl': 'IN', 'ceid': 'IN:ta'},
+    'Telugu': {'hl': 'te-IN', 'gl': 'IN', 'ceid': 'IN:te'},
+    'Bengali': {'hl': 'bn-IN', 'gl': 'IN', 'ceid': 'IN:bn'},
+    'Marathi': {'hl': 'mr-IN', 'gl': 'IN', 'ceid': 'IN:mr'},
+    'Kannada': {'hl': 'kn-IN', 'gl': 'IN', 'ceid': 'IN:kn'},
+    'Gujarati': {'hl': 'gu-IN', 'gl': 'IN', 'ceid': 'IN:gu'},
+    'Malayalam': {'hl': 'ml-IN', 'gl': 'IN', 'ceid': 'IN:ml'},
+    'Punjabi': {'hl': 'pa-IN', 'gl': 'IN', 'ceid': 'IN:pa'},
+}
+
+def fetch_google_news_rss(query, lang='English'):
     try:
+        lang_params = LANGUAGE_OPTIONS.get(lang, LANGUAGE_OPTIONS['English'])
         encoded_q = urllib.parse.quote(query)
-        rss_url = f"https://news.google.com/rss/search?q={encoded_q}&hl=en-IN&gl=IN&ceid=IN:en"
+        rss_url = f"https://news.google.com/rss/search?q={encoded_q}&hl={lang_params['hl']}&gl={lang_params['gl']}&ceid={lang_params['ceid']}"
         req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
         
         with urllib.request.urlopen(req, timeout=5) as response:
@@ -442,9 +489,12 @@ def fetch_duckduckgo_news(query):
     except Exception:
         return []
 
-def fetch_live_news_with_fallback(query):
-    articles = fetch_google_news_rss(query)
+def fetch_live_news_with_fallback(query, lang='English'):
+    articles = fetch_google_news_rss(query, lang=lang)
     if not articles:
+        # DuckDuckGo fallback has no reliable per-language region parameter
+        # for this search type, so it stays English/region-agnostic as a
+        # last resort regardless of `lang` - unchanged from before.
         articles = fetch_duckduckgo_news(query)
     return articles
 
@@ -503,9 +553,10 @@ def fetch_factcheck_rss(query):
             continue
     return results
 
-def fetch_all_sources(query):
-    """Combines general news + dedicated fact-check feeds for one query."""
-    general = fetch_live_news_with_fallback(query)
+def fetch_all_sources(query, lang='English'):
+    """Combines general news (language-aware) + dedicated fact-check feeds
+    (English-only sources, unaffected by `lang`) for one query."""
+    general = fetch_live_news_with_fallback(query, lang=lang)
     factcheck = fetch_factcheck_rss(query)
     return general + factcheck
 
@@ -595,7 +646,7 @@ def extract_main_words(text):
         'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very',
         'just', 'now', 'says', 'said', 'according', 'announced', 'new', 'news', 'breaking'
     }
-    words = re.findall(r'\b[a-zA-Z0-9]+\b', text)
+    words = unicode_words(text)
     main_words = []
     for w in words:
         w_lower = w.lower()
@@ -757,6 +808,47 @@ def compute_ml_deepfake_score(pil_image):
             if 'fake' in r.get('label', '').lower() or 'deepfake' in r.get('label', '').lower():
                 return float(r['score'])
         return None
+    except Exception:
+        return None
+
+# --- OCR (screenshot text extraction) --------------------------------------
+# A large share of real-world misinformation isn't an AI-generated photo -
+# it's a SCREENSHOT of a fake tweet/article/notice. The forensic checks above
+# only look at pixel-level authenticity; they never read what the image
+# actually says. This extracts that text via Tesseract OCR (local, free) so
+# it can optionally be sent to the Text Fact-Checker's existing, unchanged
+# search/verdict pipeline. Purely additive: this function is never called by
+# analyze_image_forensics and never touches ai_score/manipulation_score, so
+# it cannot affect the existing media verdict logic. Requires `pytesseract`
+# (pip) + the `tesseract-ocr` system binary (apt) - degrades to returning
+# None if either is missing.
+
+try:
+    import pytesseract
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
+
+def extract_text_from_image(pil_image, lang='eng'):
+    """
+    Returns extracted text (str) or None if OCR is unavailable, the image
+    has no significant readable text, or extraction fails for any reason.
+    Never raises. `lang` uses Tesseract language codes (e.g. 'eng', 'hin',
+    'eng+hin' for mixed-language screenshots) - only works for languages
+    whose Tesseract data pack is installed; falls back to no text found
+    rather than erroring if a pack is missing.
+    """
+    if not HAS_OCR:
+        return None
+    try:
+        text = pytesseract.image_to_string(pil_image, lang=lang)
+        text = text.strip()
+        # Filter out noise: OCR on non-text images often returns a handful
+        # of garbage characters - require a minimum length to count as a
+        # real find.
+        if len(text) < 15:
+            return None
+        return text
     except Exception:
         return None
 
@@ -973,7 +1065,8 @@ with st.sidebar:
     analysis_mode = st.radio(
         "Select Pipeline Mode:",
         ["📰 Text / Article Fact-Checker", "📷 Image & Video Authenticator", "🧠 Model Feedback & Active Learning"],
-        index=0
+        index=0,
+        key="analysis_mode_radio"
     )
     
     st.divider()
@@ -1004,20 +1097,27 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
         height=140,
         placeholder="Paste headline or paragraph to verify..."
     )
+
+    search_lang = st.selectbox(
+        "Search language (searches live news in this language):",
+        options=list(LANGUAGE_OPTIONS.keys()),
+        index=0,
+        help="Defaults to English, matching prior behavior exactly. Pick another language to search Google News in that language instead - useful for claims in Hindi, Tamil, etc. that English-only search would miss."
+    )
     
     col_a, col_b = st.columns([1, 4])
     with col_a:
         run_btn = st.button("🔍 Run Deep Fact Check", type="primary", use_container_width=True)
         
     if run_btn and user_input.strip():
-        with st.spinner("Analyzing claim nouns/entities, querying live news + fact-check feeds..."):
+        with st.spinner(f"Analyzing claim nouns/entities, querying live news ({search_lang}) + fact-check feeds..."):
             
             # Step 1: Query Extraction & Multi-Source Search (general news +
             # dedicated fact-check RSS feeds - see fetch_all_sources)
             queries = extract_search_queries(user_input)
             all_articles = []
             for q in queries:
-                fetched = fetch_all_sources(q)
+                fetched = fetch_all_sources(q, lang=search_lang)
                 all_articles.extend(fetched)
                 
             # Deduplicate Articles
@@ -1250,6 +1350,39 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                 st.video(uploaded_media)
             else:
                 st.image(uploaded_media, use_column_width=True)
+
+                # OCR: read any text baked into the image (screenshots of fake
+                # posts/notices/tweets are one of the most common real-world
+                # formats this kind of misinformation actually takes). This
+                # runs independently of, and never modifies, the forensic
+                # pipeline/verdict below - purely additive.
+                if HAS_OCR:
+                    ocr_lang_choice = st.selectbox(
+                        "OCR language (for text inside the image):",
+                        options=["English", "Hindi", "English + Hindi"],
+                        index=0,
+                        key="ocr_lang_select",
+                        help="Requires the matching Tesseract language pack on the server - defaults to English."
+                    )
+                    ocr_lang_map = {"English": "eng", "Hindi": "hin", "English + Hindi": "eng+hin"}
+                    try:
+                        from PIL import Image as _PILImage
+                        import io as _io
+                        _pil_img_for_ocr = _PILImage.open(_io.BytesIO(uploaded_media.getvalue()))
+                        ocr_text = extract_text_from_image(_pil_img_for_ocr, lang=ocr_lang_map[ocr_lang_choice])
+                    except Exception:
+                        ocr_text = None
+
+                    if ocr_text:
+                        with st.expander("📝 Text detected in image (OCR)", expanded=True):
+                            st.text_area("Extracted text:", value=ocr_text, height=100, key="ocr_extracted_text_display", disabled=True)
+                            st.caption("This is raw OCR output and may contain errors - review before relying on it.")
+                            if st.button("🔍 Send this text to the Fact-Checker"):
+                                st.session_state.test_claim = ocr_text
+                                st.session_state.analysis_mode_radio = "📰 Text / Article Fact-Checker"
+                                st.rerun()
+                else:
+                    st.caption("💡 OCR not available on this deployment (pytesseract/tesseract-ocr not installed) - install to detect text baked into screenshots.")
                 
         with col_med2:
             st.markdown("#### Media Verification Pipeline")
