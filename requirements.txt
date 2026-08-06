@@ -6,3 +6,4 @@ opencv-python-headless>=4.9
 duckduckgo_search>=5.0
 sentence-transformers>=2.7
 transformers>=4.40
+pytesseract>=0.3.10
