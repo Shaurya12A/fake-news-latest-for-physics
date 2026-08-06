@@ -691,6 +691,118 @@ def matches_known_hoax(text):
             return True
     return False
 
+# --- Claim origin-tracing ("timeline") --------------------------------------
+# Purely a DISPLAY feature computed from the same articles the verdict logic
+# already fetched - it never influences the verdict itself. Shows the
+# earliest/latest dated coverage found among matched articles, so a
+# recurring hoax reads as a narrative ("first matched coverage: 2019, most
+# recent: 2024") instead of a flat one-off verdict. Honesty note: this is
+# the earliest article OUR search happened to find, not a proven origin
+# date - phrased that way in the UI, never as "this rumor originated on...".
+
+from email.utils import parsedate_to_datetime as _parsedate_to_datetime
+from datetime import timezone as _timezone
+
+def _parse_article_date(date_str):
+    if not date_str:
+        return None
+    try:
+        dt = _parsedate_to_datetime(date_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+def build_claim_timeline(articles):
+    """Returns a dict with earliest/latest matched-article dates, or None if
+    no article in the list has a parseable date."""
+    dated = []
+    for a in articles:
+        dt = _parse_article_date(a.get('date', ''))
+        if dt:
+            dated.append((dt, a))
+    if not dated:
+        return None
+    dated.sort(key=lambda x: x[0])
+    earliest, latest = dated[0], dated[-1]
+    return {
+        'earliest_date': earliest[0],
+        'earliest_source': earliest[1].get('source'),
+        'latest_date': latest[0],
+        'latest_source': latest[1].get('source'),
+        'span_days': (latest[0] - earliest[0]).days,
+        'distinct_dates': len(set(d[0].date() for d in dated)),
+        'total_matched': len(dated),
+    }
+
+# --- Manipulation-technique classification ----------------------------------
+# Maps the verdict onto the IFCN/First Draft misinformation-type taxonomy
+# (Fabricated Content, False Context, Misleading Content, etc.) using
+# signals the app ALREADY computed for the verdict - a rule-based
+# approximation, not a certain classification. Computed strictly AFTER the
+# verdict; never feeds back into it, so it cannot change verdict accuracy.
+
+def classify_verdict_category(verdict):
+    # Order matters: "UNVERIFIED / PROBABLE FAKE NEWS" contains the
+    # substring "FAKE" and would be misclassified if checked after it.
+    if "UNVERIFIED" in verdict:
+        return 'unverified'
+    if "REAL" in verdict or "VERIFIED" in verdict:
+        return 'real'
+    if "DEBUNKED" in verdict or "FAKE" in verdict:
+        return 'fake'
+    return 'unverified'
+
+def classify_manipulation_technique(verdict, overlap_ratio, debunk_flag, known_hoax_flag, sensationalism_score, is_factcheck_source):
+    """Returns a {'technique','description'} dict, or None if the verdict
+    isn't a 'fake' category (no technique to label for real/unverified)."""
+    if classify_verdict_category(verdict) != 'fake':
+        return None
+    if known_hoax_flag:
+        return {'technique': 'Fabricated Content',
+                'description': 'Entirely invented claim with no factual basis - matches a well-documented, repeatedly-debunked hoax pattern.'}
+    if debunk_flag and is_factcheck_source:
+        return {'technique': 'Fabricated Content',
+                'description': 'A dedicated fact-checking source has directly investigated and refuted this specific claim.'}
+    if debunk_flag and overlap_ratio >= 0.20:
+        return {'technique': 'False Context',
+                'description': 'Related real coverage exists, but the specific claim as stated has been denied/contradicted by that coverage - genuine information may be getting reframed or misattributed.'}
+    if sensationalism_score >= 40 and overlap_ratio < 0.25:
+        return {'technique': 'Misleading Content / Clickbait Framing',
+                'description': 'Heavy sensational/alarmist language with no corroborating coverage - framing designed to provoke a reaction rather than inform.'}
+    return {'technique': 'Unverified Claim',
+            'description': 'No corroborating coverage found and no specific fabrication pattern matched - insufficient evidence to classify technique with confidence.'}
+
+# --- "Forward-back" reply card ----------------------------------------------
+# Most fact-checkers give YOU information; almost none help you respond to
+# whoever actually sent you the rumor. Generates a short, non-confrontational
+# message worded for forwarding back into the same WhatsApp/family group -
+# hand-written per language (not machine-translated, to avoid mistranslation
+# errors), templated by verdict category only. Purely a text-generation
+# feature - never reads from or writes to any variable the verdict logic uses.
+
+REPLY_CARD_TEMPLATES = {
+    'fake': {
+        'English': "Hey, I checked this and it looks like it's not true — {source_note}. Might be worth not forwarding it further. Happy to share what I found if useful!",
+        'Hindi': "नमस्ते, मैंने इसे चेक किया और यह सही नहीं लग रहा — {source_note}। इसे आगे न भेजना ही बेहतर होगा। ज़्यादा जानकारी चाहिए तो बता दीजिए।",
+    },
+    'real': {
+        'English': "Just checked — this one looks accurate, {source_note}.",
+        'Hindi': "मैंने इसे चेक किया — यह सही लग रहा है, {source_note}।",
+    },
+    'unverified': {
+        'English': "I looked into this but couldn't find anything confirming it either way — {source_note}. Might be worth waiting for more sources before sharing further.",
+        'Hindi': "मैंने इसे देखा लेकिन अभी तक इसकी पुष्टि करने वाला कुछ नहीं मिला — {source_note}। आगे भेजने से पहले थोड़ा और इंतज़ार करना बेहतर होगा।",
+    }
+}
+
+def generate_reply_card(verdict, source_note, language='English'):
+    category = classify_verdict_category(verdict)
+    lang_templates = REPLY_CARD_TEMPLATES.get(category, REPLY_CARD_TEMPLATES['unverified'])
+    template = lang_templates.get(language) or lang_templates['English']
+    return template.format(source_note=source_note or "based on what I could find")
+
 def calculate_entity_and_vector_match(claim_text, articles):
     """
     Evaluates both key noun/main word overlap in a single article
@@ -851,6 +963,75 @@ def extract_text_from_image(pil_image, lang='eng'):
         return text
     except Exception:
         return None
+
+# --- Voice-note transcription -----------------------------------------------
+# A large share of real-world misinformation in India specifically spreads as
+# WhatsApp voice notes, not text or images - a documented, understudied
+# format (Harvard Kennedy School Misinformation Review, 2022) where
+# misleading audio follows a consistent structure: an emotionally-charged
+# sender builds a personal connection, establishes credibility as an
+# eyewitness/insider, then delivers the false claim. India's own MCA
+# WhatsApp deepfake helpline separately accepts forwarded audio for review.
+# This transcribes the audio locally (faster-whisper, free, no API), then
+# feeds the transcript into the EXISTING, UNMODIFIED Text Fact-Checker
+# pipeline - same "extract text -> send to fact-checker" pattern as OCR.
+# This function never touches the text-verdict decision logic itself, so it
+# cannot affect existing text-checker accuracy.
+
+try:
+    from faster_whisper import WhisperModel
+    HAS_WHISPER = True
+except ImportError:
+    HAS_WHISPER = False
+
+@st.cache_resource(show_spinner="Loading local speech-to-text model (one-time)...")
+def get_whisper_model():
+    """
+    faster-whisper's 'base' model, int8-quantized for lower CPU/RAM use.
+    ~145MB download, one-time. Returns None (never raises) if
+    faster-whisper isn't installed or the model fails to load.
+    """
+    if not HAS_WHISPER:
+        return None
+    try:
+        return WhisperModel("base", device="cpu", compute_type="int8")
+    except Exception:
+        return None
+
+def transcribe_audio(file_bytes, filename_hint="voicenote.ogg"):
+    """
+    Returns (transcript: str|None, detected_language: str|None). Never
+    raises - returns (None, None) if whisper is unavailable, the file can't
+    be decoded, or transcription fails for any reason. WhatsApp voice notes
+    are typically .opus/.ogg; ffmpeg (already a dependency for video
+    forensics) handles decoding any common audio container.
+    """
+    model = get_whisper_model()
+    if model is None:
+        return None, None
+    import tempfile
+    import os as _os
+    tmp_path = None
+    try:
+        suffix = _os.path.splitext(filename_hint)[1] or '.ogg'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        segments, info = model.transcribe(tmp_path, beam_size=5)
+        text_parts = [seg.text for seg in segments]
+        transcript = " ".join(text_parts).strip()
+        detected_lang = getattr(info, 'language', None)
+        if len(transcript) < 5:
+            return None, detected_lang
+        return transcript, detected_lang
+    except Exception:
+        return None, None
+    finally:
+        if tmp_path and _os.path.exists(tmp_path):
+            try:
+                _os.remove(tmp_path)
+            except Exception:
+                pass
 
 def analyze_image_forensics(file_bytes):
     """
@@ -1064,7 +1245,7 @@ with st.sidebar:
     
     analysis_mode = st.radio(
         "Select Pipeline Mode:",
-        ["📰 Text / Article Fact-Checker", "📷 Image & Video Authenticator", "🧠 Model Feedback & Active Learning"],
+        ["📰 Text / Article Fact-Checker", "📷 Image & Video Authenticator", "🎙️ Voice Note Checker", "🧠 Model Feedback & Active Learning"],
         index=0,
         key="analysis_mode_radio"
     )
@@ -1273,10 +1454,24 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                         st.markdown("- **Learned-model prediction:** not available yet (train it in the Feedback tab).")
                     st.markdown(f"- **NLI contradiction score:** {f'{nli_score:.2f}' if nli_score is not None else 'N/A (sentence-transformers not installed, or no matched article)'}")
                     st.markdown(f"- **Fact-check source matched:** {'Yes' if is_factcheck_source else 'No'}")
+
+            # Manipulation-technique classification and claim timeline are
+            # computed AFTER the verdict, purely for display - neither reads
+            # back into or changes final_verdict/final_truth_index above.
+            technique_info = classify_manipulation_technique(final_verdict, overlap_ratio, debunk_flag, known_hoax_flag, sensationalism_score, is_factcheck_source)
+            claim_timeline = build_claim_timeline(unique_articles)
+
+            if technique_info:
+                st.markdown(f"""
+                <div style="background:rgba(167,139,250,0.1); border:1px solid rgba(167,139,250,0.4); border-radius:8px; padding:10px 14px; margin-top:8px;">
+                    <span style="color:#a78bfa; font-weight:bold; font-size:0.85rem;">🏷️ Manipulation Technique: {technique_info['technique']}</span><br>
+                    <span style="color:#cbd5e1; font-size:0.8rem;">{technique_info['description']}</span>
+                </div>
+                """, unsafe_allow_html=True)
                 
             st.markdown("<br>", unsafe_allow_html=True)
             
-            tab1, tab2, tab3 = st.tabs(["📲 WhatsApp Debunk Card", "🟢 Live News & Source Authority", "📊 Analytics Details"])
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📲 WhatsApp Debunk Card", "🟢 Live News & Source Authority", "🕰️ Claim Timeline", "💬 Forward-Back Reply", "📊 Analytics Details"])
             
             with tab1:
                 st.markdown("#### Ready-to-Share WhatsApp Fact-Check Briefing")
@@ -1310,8 +1505,35 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                         """, unsafe_allow_html=True)
                 else:
                     st.info("No direct corroborating headlines found on live news feeds.")
-                    
+
             with tab3:
+                st.markdown("#### Claim Coverage Timeline")
+                st.caption("Earliest/latest dates among the articles our search actually found - not a proven origin date, just what's visible in live search results.")
+                if claim_timeline:
+                    tc1, tc2 = st.columns(2)
+                    with tc1:
+                        st.markdown(f"""<div class="metric-box"><div class="metric-value" style="font-size:1.1rem;">{claim_timeline['earliest_date'].strftime('%d %b %Y')}</div><div class="metric-label">Earliest Matched Coverage</div></div>""", unsafe_allow_html=True)
+                        st.caption(f"Source: {claim_timeline['earliest_source']}")
+                    with tc2:
+                        st.markdown(f"""<div class="metric-box"><div class="metric-value" style="font-size:1.1rem;">{claim_timeline['latest_date'].strftime('%d %b %Y')}</div><div class="metric-label">Most Recent Matched Coverage</div></div>""", unsafe_allow_html=True)
+                        st.caption(f"Source: {claim_timeline['latest_source']}")
+                    if claim_timeline['span_days'] > 180:
+                        st.info(f"📅 Matched coverage spans {claim_timeline['span_days']} days across {claim_timeline['distinct_dates']} distinct dates - this looks like a claim that resurfaces periodically rather than a single one-off story.")
+                    elif claim_timeline['distinct_dates'] > 1:
+                        st.caption(f"Coverage found across {claim_timeline['distinct_dates']} distinct dates.")
+                else:
+                    st.info("No parseable publish dates found among the matched articles - timeline unavailable for this claim.")
+
+            with tab4:
+                st.markdown("#### Reply card for forwarding back to whoever sent you this")
+                st.caption("A short, non-confrontational message worded for sending back into the group/chat this came from - not just information for you.")
+                reply_lang = st.selectbox("Reply language:", options=["English", "Hindi"], index=0, key="reply_card_lang")
+                source_hint = f"checked against {best_match['source']}" if best_match else "based on available search results"
+                reply_text = generate_reply_card(final_verdict, source_hint, reply_lang)
+                st.text_area("Message:", value=reply_text, height=100, key="reply_card_text", disabled=True)
+                st.code(reply_text, language=None)
+                
+            with tab5:
                 st.json({
                     "final_verdict": final_verdict,
                     "verdict_source": verdict_source,
@@ -1584,6 +1806,33 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                         with st.expander("🔬 Forensic analysis details"):
                             for note in forensic_notes:
                                 st.markdown(f"- {note}")
+
+elif analysis_mode == "🎙️ Voice Note Checker":
+    st.markdown("### 🎙️ Voice Note Checker")
+    st.markdown("Upload a WhatsApp voice note or any short audio clip. It's transcribed locally, then you can send the transcript straight into the Text Fact-Checker - same pipeline, same accuracy, just a different way in.")
+    st.caption("⚠️ Misleading WhatsApp voice notes follow a documented pattern: an emotionally-charged sender builds a personal connection, establishes credibility as an eyewitness/insider, then delivers the claim. Transcription quality depends on audio clarity and accent - always read the transcript before trusting it.")
+
+    if not HAS_WHISPER:
+        st.warning("Voice transcription isn't available on this deployment (faster-whisper not installed). Install it to enable this feature - see chat for setup details.")
+    else:
+        uploaded_audio = st.file_uploader("Choose audio file:", type=["mp3", "wav", "m4a", "ogg", "opus", "aac", "flac"])
+        if uploaded_audio is not None:
+            st.audio(uploaded_audio)
+            if st.button("🎙️ Transcribe Voice Note", type="primary"):
+                with st.spinner("Transcribing audio locally (first run loads the model, may take longer)..."):
+                    audio_bytes = uploaded_audio.getvalue()
+                    transcript, detected_lang = transcribe_audio(audio_bytes, filename_hint=uploaded_audio.name)
+
+                if transcript:
+                    st.success(f"Transcribed{f' (detected language: {detected_lang})' if detected_lang else ''}.")
+                    st.text_area("Transcript:", value=transcript, height=140, key="voice_transcript_display")
+                    st.caption("Review the transcript for errors before relying on it - speech-to-text isn't perfect, especially with background noise or strong accents.")
+                    if st.button("🔍 Send this transcript to the Fact-Checker"):
+                        st.session_state.test_claim = transcript
+                        st.session_state.analysis_mode_radio = "📰 Text / Article Fact-Checker"
+                        st.rerun()
+                else:
+                    st.warning("Couldn't extract a usable transcript from this audio - it may be silent, too short, or in a format that didn't decode cleanly.")
 
 else:
     st.markdown("### 🧠 Model Feedback & Active Learning Hub")
