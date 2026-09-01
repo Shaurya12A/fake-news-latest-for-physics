@@ -9,7 +9,6 @@ import unicodedata
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
-import cv2
 from datetime import datetime
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -125,7 +124,7 @@ TEXT_MODEL_PATH = os.path.join(DATA_DIR, "text_learned_model.pkl")
 MEDIA_MODEL_PATH = os.path.join(DATA_DIR, "media_learned_model.pkl")
 
 TEXT_FEATURE_KEYS = ['overlap_ratio', 'raw_max_sim', 'sensationalism_score', 'journalistic_score', 'debunk_flag', 'known_hoax_flag', 'nli_contradiction_score', 'is_factcheck_source']
-MEDIA_FEATURE_KEYS = ['ai_score', 'manipulation_score', 'corroborated', 'ai_signature_found', 'is_video', 'ml_deepfake_score_raw']
+MEDIA_FEATURE_KEYS = ['ai_score', 'manipulation_score', 'corroborated', 'ai_signature_found', 'ml_deepfake_score_raw']
 
 # Minimum bar before the learned model is trusted to DRIVE the primary
 # verdict instead of just being shown as an advisory note. Both conditions
@@ -246,19 +245,26 @@ def load_model(path):
     except Exception:
         return None, {}
 
-def pick_primary_verdict(rule_verdict, rule_truth_index, feature_vector, feature_keys, learned_model, model_meta):
+def pick_primary_verdict(rule_verdict, rule_truth_index, feature_vector, feature_keys, learned_model, model_meta, override_mode="auto"):
     """
     The hybrid switch. Returns (final_verdict, final_truth_index, source_label,
     learned_pred, learned_confidence) where source_label is 'rule-based' or
     'learned-model'.
 
-    The learned model only becomes primary once it has EARNED it: enough
-    training samples AND a genuine held-out accuracy above the bar. This is
-    what makes "replace the rule-based system" safe to do automatically -
-    early on (little/no feedback), the rule-based verdict always wins by
-    default, so accuracy never regresses versus what you have today. It only
-    switches over once there's real evidence the learned model outperforms
-    manual thresholds.
+    override_mode:
+      - "auto" (default): the learned model only becomes primary once it has
+        EARNED it - enough training samples AND a genuine held-out accuracy
+        above the bar. Early on (little/no feedback), the rule-based verdict
+        always wins by default, so accuracy never regresses versus the
+        unmodified rule-based engine. This is the original, always-safe
+        behavior.
+      - "rule_based": always use the rule-based verdict, regardless of what
+        the learned model says or how well-trained it is. An explicit user
+        choice to stay on the hand-built logic.
+      - "learned_model": always use the learned model's prediction if one
+        exists (regardless of whether it has "earned" primacy under auto
+        rules) - an explicit user choice to trust the trained model. Falls
+        back to rule-based only if no model has been trained at all yet.
     """
     learned_pred, learned_confidence = None, None
     if learned_model is not None and feature_vector is not None:
@@ -269,6 +275,19 @@ def pick_primary_verdict(rule_verdict, rule_truth_index, feature_vector, feature
         except Exception:
             learned_pred, learned_confidence = None, None
 
+    def _learned_result():
+        final_truth_index = int(learned_confidence * 100) if "REAL" in str(learned_pred) or "VERIFIED" in str(learned_pred) else int(100 - learned_confidence * 100)
+        return learned_pred, final_truth_index, "learned-model", learned_pred, learned_confidence
+
+    if override_mode == "rule_based":
+        return rule_verdict, rule_truth_index, "rule-based", learned_pred, learned_confidence
+
+    if override_mode == "learned_model":
+        if learned_pred is not None:
+            return _learned_result()
+        return rule_verdict, rule_truth_index, "rule-based", learned_pred, learned_confidence
+
+    # override_mode == "auto" (default): original earned-primacy logic
     n_samples = model_meta.get('n_samples', 0)
     accuracy = model_meta.get('accuracy', 0) or 0
     accuracy_type = model_meta.get('accuracy_type', '')
@@ -280,13 +299,135 @@ def pick_primary_verdict(rule_verdict, rule_truth_index, feature_vector, feature
     )
 
     if earned_primary:
-        # Reuse the rule-based truth_index scale isn't meaningful for the
-        # learned model's own probability, so derive an equivalent index from
-        # its confidence instead.
-        final_truth_index = int(learned_confidence * 100) if "REAL" in str(learned_pred) or "VERIFIED" in str(learned_pred) else int(100 - learned_confidence * 100)
-        return learned_pred, final_truth_index, "learned-model", learned_pred, learned_confidence
+        return _learned_result()
 
     return rule_verdict, rule_truth_index, "rule-based", learned_pred, learned_confidence
+
+# --- Bulk upload training helpers -------------------------------------------
+
+TEXT_LABEL_ALIASES = {
+    'real': "🟢 VERIFIED REAL / HIGHLY LIKELY", 'true': "🟢 VERIFIED REAL / HIGHLY LIKELY",
+    'verified': "🟢 VERIFIED REAL / HIGHLY LIKELY", 'verified real': "🟢 VERIFIED REAL / HIGHLY LIKELY",
+    'fake': "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT", 'false': "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT",
+    'debunked': "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT",
+    'unverified': "⚠️ UNVERIFIED / PROBABLE FAKE NEWS", 'unknown': "⚠️ UNVERIFIED / PROBABLE FAKE NEWS",
+}
+MEDIA_LABEL_ALIASES = {
+    'real': "🟢 REAL IMAGE / GRAPHIC", 'true': "🟢 REAL IMAGE / GRAPHIC",
+    'fake': "🚨 FAKE AI GENERATED IMAGE", 'false': "🚨 FAKE AI GENERATED IMAGE", 'ai generated': "🚨 FAKE AI GENERATED IMAGE",
+    'manipulated': "⚠️ SIGNS OF MANIPULATION DETECTED",
+    'unverified': "⚠️ UNVERIFIED — NO STRONG SIGNAL EITHER WAY", 'unknown': "⚠️ UNVERIFIED — NO STRONG SIGNAL EITHER WAY",
+    'no manipulation': "✅ NO MANIPULATION SIGNALS DETECTED",
+}
+TEXT_CANONICAL_LABELS = ["🟢 VERIFIED REAL / HIGHLY LIKELY", "🚨 DEBUNKED FAKE / SENSATIONAL CLICKBAIT", "⚠️ UNVERIFIED / PROBABLE FAKE NEWS"]
+MEDIA_CANONICAL_LABELS = ["🟢 REAL IMAGE / GRAPHIC", "🚨 FAKE AI GENERATED IMAGE", "⚠️ SIGNS OF MANIPULATION DETECTED", "✅ NO MANIPULATION SIGNALS DETECTED", "⚠️ UNVERIFIED — NO STRONG SIGNAL EITHER WAY"]
+
+def normalize_label(raw, claim_type):
+    """
+    Maps a free-text label from an uploaded file (e.g. "Real", "fake",
+    "FALSE") onto the app's canonical verdict strings. Accepts the exact
+    canonical strings too (case-insensitive substring match), so a file
+    that already uses the app's own verdict text also works. Returns None
+    if the label can't be recognized.
+    """
+    if raw is None:
+        return None
+    raw_str = str(raw).strip()
+    if not raw_str:
+        return None
+    raw_lower = raw_str.lower()
+    canonical_list = TEXT_CANONICAL_LABELS if claim_type == 'Text Claim' else MEDIA_CANONICAL_LABELS
+    for c in canonical_list:
+        if raw_lower in c.lower():
+            return c
+    aliases = TEXT_LABEL_ALIASES if claim_type == 'Text Claim' else MEDIA_LABEL_ALIASES
+    return aliases.get(raw_lower)
+
+def compute_text_features_for_claim(claim_text, lang='English'):
+    """
+    Computes the exact same feature vector the live Text Fact-Checker
+    computes for a claim, by calling the SAME underlying functions
+    (extract_search_queries, fetch_all_sources, calculate_entity_and_vector_match,
+    analyze_linguistic_risk, get_debunk_assessment, matches_known_hoax) rather
+    than reimplementing any of that logic. Used for bulk file-upload
+    training, so uploaded data is scored identically to a live check and can
+    never silently drift out of sync with it. Makes real network calls
+    (live search) - one claim at a time, so bulk callers should cap row
+    counts and show progress.
+    """
+    queries = extract_search_queries(claim_text)
+    all_articles = []
+    for q in queries:
+        all_articles.extend(fetch_all_sources(q, lang=lang))
+    seen = set()
+    unique_articles = []
+    for a in all_articles:
+        if a['title'] not in seen:
+            seen.add(a['title'])
+            unique_articles.append(a)
+
+    overlap_ratio, raw_max_sim, best_match, matched_words, total_words = calculate_entity_and_vector_match(claim_text, unique_articles)
+    sensationalism_score, journalistic_score = analyze_linguistic_risk(claim_text)
+    debunk_flag, nli_score, debunk_method = get_debunk_assessment(claim_text, best_match)
+    is_factcheck_source = bool(best_match and best_match.get('source_type') == 'factcheck')
+    known_hoax_flag = matches_known_hoax(claim_text)
+
+    return {
+        'overlap_ratio': round(overlap_ratio, 4),
+        'raw_max_sim': round(raw_max_sim, 4),
+        'sensationalism_score': sensationalism_score,
+        'journalistic_score': journalistic_score,
+        'debunk_flag': int(debunk_flag),
+        'known_hoax_flag': int(known_hoax_flag),
+        'nli_contradiction_score': round(nli_score, 4) if nli_score is not None else 0.0,
+        'is_factcheck_source': int(is_factcheck_source),
+    }
+
+def run_training_cycle():
+    """
+    Trains (or retrains) both the text and media learned models from the
+    current st.session_state.feedback_dataset, updates session state, and
+    persists both to disk. Returns (text_result, media_result) dicts from
+    train_model_from_feedback. Shared by the manual Retrain button and the
+    bulk file-upload flow, so both paths behave identically and any future
+    change to training only needs to happen in one place.
+    """
+    all_entries = st.session_state.feedback_dataset
+    text_entries = [e for e in all_entries if e.get('type') == 'Text Claim']
+    media_entries = [e for e in all_entries if e.get('type') == 'Media File']
+
+    text_result = train_model_from_feedback(text_entries, TEXT_FEATURE_KEYS)
+    media_result = train_model_from_feedback(media_entries, MEDIA_FEATURE_KEYS)
+
+    if text_result['model'] is not None:
+        text_meta = {'n_samples': text_result['n_samples'], 'accuracy': text_result['accuracy'], 'accuracy_type': text_result['accuracy_type']}
+        st.session_state.text_learned_model = text_result['model']
+        st.session_state.text_model_meta = text_meta
+        save_model(text_result['model'], TEXT_MODEL_PATH, meta=text_meta)
+
+    if media_result['model'] is not None:
+        media_meta = {'n_samples': media_result['n_samples'], 'accuracy': media_result['accuracy'], 'accuracy_type': media_result['accuracy_type']}
+        st.session_state.media_learned_model = media_result['model']
+        st.session_state.media_model_meta = media_meta
+        save_model(media_result['model'], MEDIA_MODEL_PATH, meta=media_meta)
+
+    return text_result, media_result
+
+def report_training_result(result, model_name):
+    """Renders the standard success/info block for one trained model's
+    result dict - shared by the manual Retrain button and bulk upload."""
+    if result['model'] is not None:
+        meta = {'n_samples': result['n_samples'], 'accuracy': result['accuracy'], 'accuracy_type': result['accuracy_type']}
+        earned = meta['n_samples'] >= MIN_SAMPLES_FOR_PRIMARY and meta['accuracy_type'] == 'held-out test split' and (meta['accuracy'] or 0) >= MIN_HELDOUT_ACCURACY_FOR_PRIMARY
+        st.success(f"{model_name} model trained on {result['n_samples']} samples across {result['n_classes']} labels. Accuracy: {result['accuracy']}% ({result['accuracy_type']}).")
+        st.caption(f"Label distribution: {result['class_counts']}")
+        st.markdown(
+            "✅ **This model has earned PRIMARY status under Automatic mode.**"
+            if earned else
+            f"⏳ Not primary yet under Automatic mode - needs ≥{MIN_SAMPLES_FOR_PRIMARY} samples with held-out accuracy ≥{MIN_HELDOUT_ACCURACY_FOR_PRIMARY:.0f}%. You can still force it on via the Verdict Source selector."
+        )
+    else:
+        st.info(f"{model_name} model not (re)trained: {result['message']}")
 
 if 'verification_history' not in st.session_state:
     st.session_state.verification_history = []
@@ -964,75 +1105,6 @@ def extract_text_from_image(pil_image, lang='eng'):
     except Exception:
         return None
 
-# --- Voice-note transcription -----------------------------------------------
-# A large share of real-world misinformation in India specifically spreads as
-# WhatsApp voice notes, not text or images - a documented, understudied
-# format (Harvard Kennedy School Misinformation Review, 2022) where
-# misleading audio follows a consistent structure: an emotionally-charged
-# sender builds a personal connection, establishes credibility as an
-# eyewitness/insider, then delivers the false claim. India's own MCA
-# WhatsApp deepfake helpline separately accepts forwarded audio for review.
-# This transcribes the audio locally (faster-whisper, free, no API), then
-# feeds the transcript into the EXISTING, UNMODIFIED Text Fact-Checker
-# pipeline - same "extract text -> send to fact-checker" pattern as OCR.
-# This function never touches the text-verdict decision logic itself, so it
-# cannot affect existing text-checker accuracy.
-
-try:
-    from faster_whisper import WhisperModel
-    HAS_WHISPER = True
-except ImportError:
-    HAS_WHISPER = False
-
-@st.cache_resource(show_spinner="Loading local speech-to-text model (one-time)...")
-def get_whisper_model():
-    """
-    faster-whisper's 'base' model, int8-quantized for lower CPU/RAM use.
-    ~145MB download, one-time. Returns None (never raises) if
-    faster-whisper isn't installed or the model fails to load.
-    """
-    if not HAS_WHISPER:
-        return None
-    try:
-        return WhisperModel("base", device="cpu", compute_type="int8")
-    except Exception:
-        return None
-
-def transcribe_audio(file_bytes, filename_hint="voicenote.ogg"):
-    """
-    Returns (transcript: str|None, detected_language: str|None). Never
-    raises - returns (None, None) if whisper is unavailable, the file can't
-    be decoded, or transcription fails for any reason. WhatsApp voice notes
-    are typically .opus/.ogg; ffmpeg (already a dependency for video
-    forensics) handles decoding any common audio container.
-    """
-    model = get_whisper_model()
-    if model is None:
-        return None, None
-    import tempfile
-    import os as _os
-    tmp_path = None
-    try:
-        suffix = _os.path.splitext(filename_hint)[1] or '.ogg'
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
-        segments, info = model.transcribe(tmp_path, beam_size=5)
-        text_parts = [seg.text for seg in segments]
-        transcript = " ".join(text_parts).strip()
-        detected_lang = getattr(info, 'language', None)
-        if len(transcript) < 5:
-            return None, detected_lang
-        return transcript, detected_lang
-    except Exception:
-        return None, None
-    finally:
-        if tmp_path and _os.path.exists(tmp_path):
-            try:
-                _os.remove(tmp_path)
-            except Exception:
-                pass
-
 def analyze_image_forensics(file_bytes):
     """
     Real, file-content-based signals for images:
@@ -1125,119 +1197,6 @@ def analyze_image_forensics(file_bytes):
 
     return result
 
-def analyze_video_forensics(file_bytes, filename_hint="upload.mp4"):
-    """
-    Real, file-content-based signals for video:
-      1. Container/stream metadata via ffprobe - checks the encoder tag and
-         format tags. Most AI video generators either strip metadata
-         entirely or leave a generic encoder string; this is a weak signal,
-         reported for transparency rather than treated as decisive.
-      2. Frame sharpness-consistency heuristic via OpenCV - samples frames
-         evenly across the clip and computes each frame's Laplacian
-         variance (a focus/sharpness measure). Real camera footage usually
-         has smoothly varying sharpness across frames; some generated or
-         heavily edited clips show abrupt jumps. This is a coarse proxy,
-         not a trained deepfake classifier - it will miss high-quality
-         modern generative video and can false-positive on legitimately
-         shaky or low-light footage.
-      3. Pretrained ML deepfake classifier - same image classifier as
-         images, applied to a SMALLER frame sample (max 5, vs 12 for the
-         sharpness check) since it's much more compute-heavy per frame -
-         this keeps per-upload latency reasonable. Scores are averaged
-         across sampled frames.
-    Returns a dict of scores/flags; never raises.
-    """
-    import subprocess
-    import tempfile
-    import os
-    import json as _json
-    from PIL import Image as PILImage
-
-    result = {
-        'encoder_tag': None,
-        'frame_sharpness_std': None,
-        'frame_count_sampled': 0,
-        'ml_deepfake_score': None,
-        'ml_frames_sampled': 0,
-        'parse_error': None,
-    }
-
-    tmp_path = None
-    try:
-        suffix = os.path.splitext(filename_hint)[1] or '.mp4'
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
-
-        # 1. ffprobe metadata
-        try:
-            probe = subprocess.run(
-                ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', tmp_path],
-                capture_output=True, text=True, timeout=15
-            )
-            if probe.returncode == 0:
-                meta = _json.loads(probe.stdout)
-                fmt_tags = meta.get('format', {}).get('tags', {})
-                result['encoder_tag'] = fmt_tags.get('encoder') or fmt_tags.get('software')
-        except Exception:
-            pass
-
-        # 2. Frame sharpness consistency (OpenCV)
-        cap = cv2.VideoCapture(tmp_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-        sample_count = min(12, total_frames) if total_frames > 0 else 0
-        sharpness_values = []
-        sampled_frames_bgr = []
-
-        if sample_count > 1:
-            indices = np.linspace(0, total_frames - 1, sample_count).astype(int)
-            for idx in indices:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-                ok, frame = cap.read()
-                if not ok:
-                    continue
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-                sharpness_values.append(lap_var)
-                sampled_frames_bgr.append(frame)
-        cap.release()
-
-        if len(sharpness_values) > 1:
-            mean_s = float(np.mean(sharpness_values))
-            std_s = float(np.std(sharpness_values))
-            # Coefficient of variation - normalized so it's comparable across
-            # differently-exposed clips
-            result['frame_sharpness_std'] = round(std_s / mean_s, 3) if mean_s > 0 else None
-            result['frame_count_sampled'] = len(sharpness_values)
-
-        # 3. Pretrained ML deepfake classifier on a smaller frame subsample
-        if sampled_frames_bgr and HAS_DEEPFAKE_CLF:
-            ml_sample_indices = np.linspace(0, len(sampled_frames_bgr) - 1, min(5, len(sampled_frames_bgr))).astype(int)
-            ml_scores = []
-            for i in ml_sample_indices:
-                try:
-                    rgb_frame = cv2.cvtColor(sampled_frames_bgr[int(i)], cv2.COLOR_BGR2RGB)
-                    pil_frame = PILImage.fromarray(rgb_frame)
-                    s = compute_ml_deepfake_score(pil_frame)
-                    if s is not None:
-                        ml_scores.append(s)
-                except Exception:
-                    continue
-            if ml_scores:
-                result['ml_deepfake_score'] = int(np.mean(ml_scores) * 100)
-                result['ml_frames_sampled'] = len(ml_scores)
-
-    except Exception as e:
-        result['parse_error'] = str(e)
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-
-    return result
-
 with st.sidebar:
     st.markdown("<h2 style='color:#34d399; margin-bottom:0;'>🛡️ VeriFact AI</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color:#94a3b8; font-size:0.8rem;'>Misinformation Command Center</p>", unsafe_allow_html=True)
@@ -1245,7 +1204,7 @@ with st.sidebar:
     
     analysis_mode = st.radio(
         "Select Pipeline Mode:",
-        ["📰 Text / Article Fact-Checker", "📷 Image & Video Authenticator", "🎙️ Voice Note Checker", "🧠 Model Feedback & Active Learning"],
+        ["📰 Text / Article Fact-Checker", "📷 Image Authenticator", "🧠 Model Feedback & Active Learning"],
         index=0,
         key="analysis_mode_radio"
     )
@@ -1285,6 +1244,20 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
         index=0,
         help="Defaults to English, matching prior behavior exactly. Pick another language to search Google News in that language instead - useful for claims in Hindi, Tamil, etc. that English-only search would miss."
     )
+
+    text_verdict_mode_label = {
+        "Automatic (recommended)": "auto",
+        "Always rule-based engine": "rule_based",
+        "Always learned model (if trained)": "learned_model",
+    }
+    text_mode_choice = st.selectbox(
+        "Verdict source:",
+        options=list(text_verdict_mode_label.keys()),
+        index=0,
+        key="text_verdict_mode_select",
+        help="Automatic: the learned model only takes over once it's proven itself (30+ samples, 75%+ held-out accuracy). You can force either source manually once a model has been trained in the Feedback tab."
+    )
+    text_override_mode = text_verdict_mode_label[text_mode_choice]
     
     col_a, col_b = st.columns([1, 4])
     with col_a:
@@ -1380,7 +1353,8 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
             }
             final_verdict, final_truth_index, verdict_source, learned_pred, learned_confidence = pick_primary_verdict(
                 verdict, truth_index, feature_vector, TEXT_FEATURE_KEYS,
-                st.session_state.text_learned_model, st.session_state.text_model_meta
+                st.session_state.text_learned_model, st.session_state.text_model_meta,
+                override_mode=text_override_mode
             )
             if verdict_source == "learned-model":
                 status_class = "badge-real" if ("REAL" in str(final_verdict) or "VERIFIED" in str(final_verdict)) else ("badge-fake" if "FAKE" in str(final_verdict) or "DEBUNKED" in str(final_verdict) else "badge-warning")
@@ -1425,9 +1399,9 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
             """, unsafe_allow_html=True)
 
             source_note = (
-                f"🧠 Verdict source: **Learned model** (trained on {st.session_state.text_model_meta.get('n_samples')} samples, {st.session_state.text_model_meta.get('accuracy')}% held-out accuracy - it has earned primacy over the rule-based engine)."
+                f"🧠 Verdict source: **Learned model** (trained on {st.session_state.text_model_meta.get('n_samples')} samples, {st.session_state.text_model_meta.get('accuracy')}% held-out accuracy) - mode: {text_mode_choice}."
                 if verdict_source == "learned-model"
-                else "⚙️ Verdict source: **Rule-based engine** (the learned model hasn't yet reached the sample/accuracy bar to take over - see the Feedback tab for progress)."
+                else f"⚙️ Verdict source: **Rule-based engine** - mode: {text_mode_choice}."
             )
             st.caption(source_note)
             if learned_pred is not None and verdict_source == "rule-based":
@@ -1554,67 +1528,75 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                     "duckduckgo_fallback_enabled": HAS_DDG
                 })
 
-elif analysis_mode == "📷 Image & Video Authenticator":
-    st.markdown("### 📷 Image & Video Authenticator Engine")
-    st.markdown("Upload a video (`.mp4`, `.mov`) or news screenshot (`.jpg`, `.png`) to evaluate authenticity against deepfake signals, synthetic audio, and live news grounding.")
-    st.caption("⚠️ This combines lightweight forensic heuristics (EXIF metadata, Error Level Analysis, frame-sharpness consistency) with a pretrained deepfake-detection classifier where available. None of this is proof of authenticity or manipulation. A 2025 benchmark (Deepfake-Eval-2024) found open-source deepfake detectors lose roughly half their claimed accuracy on real in-the-wild content versus the curated datasets they're normally scored on - treat every result here as a lead for further checking, never a final verdict.")
+elif analysis_mode == "📷 Image Authenticator":
+    st.markdown("### 📷 Image Authenticator Engine")
+    st.markdown("Upload a news screenshot or photo (`.jpg`, `.png`, `.webp`) to evaluate authenticity against deepfake signals and live news grounding.")
+    st.caption("⚠️ This combines lightweight forensic heuristics (EXIF metadata, Error Level Analysis) with a pretrained deepfake-detection classifier where available. None of this is proof of authenticity or manipulation. A 2025 benchmark (Deepfake-Eval-2024) found open-source deepfake detectors lose roughly half their claimed accuracy on real in-the-wild content versus the curated datasets they're normally scored on - treat every result here as a lead for further checking, never a final verdict.")
+
+    media_verdict_mode_label = {
+        "Automatic (recommended)": "auto",
+        "Always rule-based / forensic engine": "rule_based",
+        "Always learned model (if trained)": "learned_model",
+    }
+    media_mode_choice = st.selectbox(
+        "Verdict source:",
+        options=list(media_verdict_mode_label.keys()),
+        index=0,
+        key="media_verdict_mode_select",
+        help="Automatic: the learned model only takes over once it's proven itself (30+ samples, 75%+ held-out accuracy). You can force either source manually once a model has been trained in the Feedback tab."
+    )
+    media_override_mode = media_verdict_mode_label[media_mode_choice]
     
-    uploaded_media = st.file_uploader("Choose Video or Image File:", type=["mp4", "mov", "avi", "jpg", "jpeg", "png", "webp"])
-    media_context = st.text_input("Associated Claim Context (Optional):", placeholder="e.g. 'Viral video claiming official statement announced today'")
+    uploaded_media = st.file_uploader("Choose Image File:", type=["jpg", "jpeg", "png", "webp"])
+    media_context = st.text_input("Associated Claim Context (Optional):", placeholder="e.g. 'Viral photo claiming official statement announced today'")
     
     if uploaded_media is not None:
-        file_type = uploaded_media.type
-        is_video = "video" in file_type
-        
         col_med1, col_med2 = st.columns([1, 1])
         with col_med1:
-            if is_video:
-                st.video(uploaded_media)
+            st.image(uploaded_media, use_container_width=True)
+
+            # OCR: read any text baked into the image (screenshots of fake
+            # posts/notices/tweets are one of the most common real-world
+            # formats this kind of misinformation actually takes). This
+            # runs independently of, and never modifies, the forensic
+            # pipeline/verdict below - purely additive.
+            if HAS_OCR:
+                ocr_lang_choice = st.selectbox(
+                    "OCR language (for text inside the image):",
+                    options=["English", "Hindi", "English + Hindi"],
+                    index=0,
+                    key="ocr_lang_select",
+                    help="Requires the matching Tesseract language pack on the server - defaults to English."
+                )
+                ocr_lang_map = {"English": "eng", "Hindi": "hin", "English + Hindi": "eng+hin"}
+                try:
+                    from PIL import Image as _PILImage
+                    import io as _io
+                    _pil_img_for_ocr = _PILImage.open(_io.BytesIO(uploaded_media.getvalue()))
+                    ocr_text = extract_text_from_image(_pil_img_for_ocr, lang=ocr_lang_map[ocr_lang_choice])
+                except Exception:
+                    ocr_text = None
+
+                if ocr_text:
+                    with st.expander("📝 Text detected in image (OCR)", expanded=True):
+                        st.text_area("Extracted text:", value=ocr_text, height=100, key="ocr_extracted_text_display", disabled=True)
+                        st.caption("This is raw OCR output and may contain errors - review before relying on it.")
+                        if st.button("🔍 Send this text to the Fact-Checker"):
+                            st.session_state.test_claim = ocr_text
+                            st.session_state.analysis_mode_radio = "📰 Text / Article Fact-Checker"
+                            st.rerun()
             else:
-                st.image(uploaded_media, use_container_width=True)
-
-                # OCR: read any text baked into the image (screenshots of fake
-                # posts/notices/tweets are one of the most common real-world
-                # formats this kind of misinformation actually takes). This
-                # runs independently of, and never modifies, the forensic
-                # pipeline/verdict below - purely additive.
-                if HAS_OCR:
-                    ocr_lang_choice = st.selectbox(
-                        "OCR language (for text inside the image):",
-                        options=["English", "Hindi", "English + Hindi"],
-                        index=0,
-                        key="ocr_lang_select",
-                        help="Requires the matching Tesseract language pack on the server - defaults to English."
-                    )
-                    ocr_lang_map = {"English": "eng", "Hindi": "hin", "English + Hindi": "eng+hin"}
-                    try:
-                        from PIL import Image as _PILImage
-                        import io as _io
-                        _pil_img_for_ocr = _PILImage.open(_io.BytesIO(uploaded_media.getvalue()))
-                        ocr_text = extract_text_from_image(_pil_img_for_ocr, lang=ocr_lang_map[ocr_lang_choice])
-                    except Exception:
-                        ocr_text = None
-
-                    if ocr_text:
-                        with st.expander("📝 Text detected in image (OCR)", expanded=True):
-                            st.text_area("Extracted text:", value=ocr_text, height=100, key="ocr_extracted_text_display", disabled=True)
-                            st.caption("This is raw OCR output and may contain errors - review before relying on it.")
-                            if st.button("🔍 Send this text to the Fact-Checker"):
-                                st.session_state.test_claim = ocr_text
-                                st.session_state.analysis_mode_radio = "📰 Text / Article Fact-Checker"
-                                st.rerun()
-                else:
-                    st.caption("💡 OCR not available on this deployment (pytesseract/tesseract-ocr not installed) - install to detect text baked into screenshots.")
+                st.caption("💡 OCR not available on this deployment (pytesseract/tesseract-ocr not installed) - install to detect text baked into screenshots.")
                 
         with col_med2:
             st.markdown("#### Media Verification Pipeline")
-            if st.button("⚡ Authenticate Media File", type="primary"):
+            if st.button("⚡ Authenticate Image", type="primary"):
                 with st.spinner("Analyzing file metadata, compression artifacts, and search grounding..."):
 
                     media_bytes = uploaded_media.getvalue()
                     filename = uploaded_media.name.lower()
 
-                    # Text-context corroboration is now only ONE input among several,
+                    # Text-context corroboration is only ONE input among several,
                     # never the sole gate - so an upload with no caption still gets a
                     # real, file-based analysis instead of defaulting to "fake".
                     corroborated = False
@@ -1628,57 +1610,29 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                     synthetic_keywords = ["sora", "runway", "deepfake", "pika", "midjourney", "synth", "elevenlabs"]
                     has_synthetic_filename_tag = any(kw in filename or kw in media_context.lower() for kw in synthetic_keywords)
 
-                    forensics = {}
-                    ai_score = 40
-                    manipulation_score = 40
                     forensic_notes = []
 
-                    if is_video:
-                        forensics = analyze_video_forensics(media_bytes, filename_hint=filename)
-                        if forensics.get('parse_error'):
-                            forensic_notes.append(f"Video could not be fully parsed for forensic analysis ({forensics['parse_error']}).")
-                        else:
-                            if forensics.get('encoder_tag'):
-                                forensic_notes.append(f"Container encoder tag: {forensics['encoder_tag']}")
-                            sharp_cv = forensics.get('frame_sharpness_std')
-                            if sharp_cv is not None:
-                                # Higher coefficient of variation in frame sharpness = more
-                                # inconsistency across sampled frames.
-                                manipulation_score = min(int(sharp_cv * 180), 90)
-                                ai_score = manipulation_score
-                                forensic_notes.append(f"Frame sharpness consistency variance: {sharp_cv} (sampled {forensics.get('frame_count_sampled', 0)} frames)")
-                            else:
-                                forensic_notes.append("Not enough frames could be sampled for a frame-consistency check.")
-                            ml_score = forensics.get('ml_deepfake_score')
-                            if ml_score is not None:
-                                # Strongest single signal when available - takes over ai_score,
-                                # but caveat prominently (see module-level note): even the best
-                                # open-source deepfake detectors lose roughly half their claimed
-                                # accuracy on real in-the-wild content per 2025 benchmarking.
-                                ai_score = ml_score
-                                forensic_notes.append(f"Pretrained deepfake classifier: {ml_score}% fake-probability (averaged over {forensics.get('ml_frames_sampled', 0)} sampled frames) - treat as evidence, not proof; real-world accuracy is meaningfully lower than academic benchmarks.")
-                            elif not HAS_DEEPFAKE_CLF:
-                                forensic_notes.append("Pretrained deepfake classifier not available (transformers not installed) - falling back to the frame-sharpness heuristic only.")
+                    forensics = analyze_image_forensics(media_bytes)
+                    ai_score = 40
+                    manipulation_score = 40
+                    if forensics.get('parse_error'):
+                        forensic_notes.append(f"Image could not be fully parsed for forensic analysis ({forensics['parse_error']}).")
                     else:
-                        forensics = analyze_image_forensics(media_bytes)
-                        if forensics.get('parse_error'):
-                            forensic_notes.append(f"Image could not be fully parsed for forensic analysis ({forensics['parse_error']}).")
-                        else:
-                            ela = forensics.get('ela_score')
-                            if ela is not None:
-                                manipulation_score = ela
-                                forensic_notes.append(f"Error Level Analysis score: {ela}% (mean recompression error {forensics.get('ela_mean_error')}, high-error pixel ratio {forensics.get('ela_high_error_ratio')})")
-                            if not forensics.get('has_camera_exif'):
-                                forensic_notes.append("No camera EXIF metadata (Make/Model/GPS/timestamp) found - consistent with, but not proof of, AI generation or a screenshot.")
-                            ai_score = 30 if forensics.get('has_camera_exif') else 55
-                            ml_score = forensics.get('ml_deepfake_score')
-                            if ml_score is not None:
-                                ai_score = ml_score
-                                forensic_notes.append(f"Pretrained deepfake classifier: {ml_score}% fake-probability - treat as evidence, not proof; real-world accuracy is meaningfully lower than academic benchmarks.")
-                            elif not HAS_DEEPFAKE_CLF:
-                                forensic_notes.append("Pretrained deepfake classifier not available (transformers not installed) - falling back to EXIF/ELA heuristics only.")
+                        ela = forensics.get('ela_score')
+                        if ela is not None:
+                            manipulation_score = ela
+                            forensic_notes.append(f"Error Level Analysis score: {ela}% (mean recompression error {forensics.get('ela_mean_error')}, high-error pixel ratio {forensics.get('ela_high_error_ratio')})")
+                        if not forensics.get('has_camera_exif'):
+                            forensic_notes.append("No camera EXIF metadata (Make/Model/GPS/timestamp) found - consistent with, but not proof of, AI generation or a screenshot.")
+                        ai_score = 30 if forensics.get('has_camera_exif') else 55
+                        ml_score = forensics.get('ml_deepfake_score')
+                        if ml_score is not None:
+                            ai_score = ml_score
+                            forensic_notes.append(f"Pretrained deepfake classifier: {ml_score}% fake-probability - treat as evidence, not proof; real-world accuracy is meaningfully lower than academic benchmarks.")
+                        elif not HAS_DEEPFAKE_CLF:
+                            forensic_notes.append("Pretrained deepfake classifier not available (transformers not installed) - falling back to EXIF/ELA heuristics only.")
 
-                    ai_signature_found = forensics.get('ai_signature_found') if not is_video else None
+                    ai_signature_found = forensics.get('ai_signature_found')
                     ml_score = forensics.get('ml_deepfake_score')
 
                     # --- Decision combination ---
@@ -1687,27 +1641,27 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                     # ML classifier's own confident read of the actual pixels > news
                     # corroboration > forensic heuristic scores alone.
                     if ai_signature_found:
-                        media_verdict = "🚨 FAKE AI GENERATED VIDEO" if is_video else "🚨 FAKE AI GENERATED IMAGE"
+                        media_verdict = "🚨 FAKE AI GENERATED IMAGE"
                         badge_style = "badge-fake"
                         confidence = 95
                         summary_msg = f"Metadata explicitly identifies this file as generated by '{ai_signature_found}'."
                         ai_score = 95
                         manipulation_score = max(manipulation_score, 80)
                     elif has_synthetic_filename_tag:
-                        media_verdict = "🚨 FAKE AI GENERATED VIDEO" if is_video else "🚨 FAKE AI GENERATED IMAGE"
+                        media_verdict = "🚨 FAKE AI GENERATED IMAGE"
                         badge_style = "badge-fake"
                         confidence = 80
                         summary_msg = "Filename or claim context references a known generative-AI tool."
                         ai_score = max(ai_score, 85)
                         manipulation_score = max(manipulation_score, 75)
                     elif ml_score is not None and ml_score >= 65:
-                        media_verdict = "🚨 FAKE AI GENERATED VIDEO" if is_video else "🚨 FAKE AI GENERATED IMAGE"
+                        media_verdict = "🚨 FAKE AI GENERATED IMAGE"
                         badge_style = "badge-fake"
                         confidence = ml_score
                         summary_msg = f"The pretrained deepfake classifier flagged this as {ml_score}% likely AI-generated/manipulated - this is the strongest available signal here, but still an estimate (see the caveat above), not proof."
                         ai_score = ml_score
                     elif corroborated:
-                        media_verdict = "🟢 REAL VIDEO" if is_video else "🟢 REAL IMAGE / GRAPHIC"
+                        media_verdict = "🟢 REAL IMAGE / GRAPHIC"
                         badge_style = "badge-real"
                         confidence = 85
                         summary_msg = "Corroborated by live news grounding feeds, and file-level forensic checks found no strong manipulation signal."
@@ -1740,21 +1694,21 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                             'manipulation_score': int(manipulation_score),
                             'corroborated': int(corroborated),
                             'ai_signature_found': int(bool(ai_signature_found)),
-                            'is_video': int(is_video),
                             'ml_deepfake_score_raw': int(forensics.get('ml_deepfake_score')) if forensics.get('ml_deepfake_score') is not None else -1,
                         }
                     }
 
-                    # Hybrid switch (same mechanism as the text checker): the
-                    # learned model only becomes primary once it has enough
-                    # samples AND genuine held-out accuracy - see
-                    # pick_primary_verdict. With no/little media feedback yet,
-                    # this is a no-op and the forensic-based verdict above is
-                    # exactly what gets shown, unchanged.
+                    # Hybrid switch: driven by media_override_mode (the selector
+                    # above). "Automatic" only lets the learned model take over
+                    # once it has earned it (30+ samples, 75%+ held-out
+                    # accuracy) - so with no/little media feedback yet, this is
+                    # a no-op and the forensic-based verdict above is exactly
+                    # what gets shown, unchanged.
                     media_feature_vector = st.session_state.last_analyzed_claim['features']
                     final_media_verdict, final_media_confidence, media_verdict_source, media_learned_pred, media_learned_confidence = pick_primary_verdict(
                         media_verdict, confidence, media_feature_vector, MEDIA_FEATURE_KEYS,
-                        st.session_state.media_learned_model, st.session_state.media_model_meta
+                        st.session_state.media_learned_model, st.session_state.media_model_meta,
+                        override_mode=media_override_mode
                     )
                     if media_verdict_source == "learned-model":
                         badge_style = "badge-real" if "REAL" in str(final_media_verdict) else ("badge-fake" if "FAKE" in str(final_media_verdict) else "badge-warning")
@@ -1766,7 +1720,7 @@ elif analysis_mode == "📷 Image & Video Authenticator":
 
                     st.session_state.verification_history.append({
                         'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'claim': f"[{'Video' if is_video else 'Image'}] " + (media_context[:40] if media_context else filename),
+                        'claim': "[Image] " + (media_context[:40] if media_context else filename),
                         'verdict': media_verdict,
                         'truth_index': f"{100 - ai_score}%",
                         'corroboration': "Verified" if corroborated else "Unverified"
@@ -1781,9 +1735,9 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                     """, unsafe_allow_html=True)
 
                     media_source_note = (
-                        f"🧠 Verdict source: **Learned model** (trained on {st.session_state.media_model_meta.get('n_samples')} samples, {st.session_state.media_model_meta.get('accuracy')}% held-out accuracy)."
+                        f"🧠 Verdict source: **Learned model** (trained on {st.session_state.media_model_meta.get('n_samples')} samples, {st.session_state.media_model_meta.get('accuracy')}% held-out accuracy) - mode: {media_mode_choice}."
                         if media_verdict_source == "learned-model"
-                        else "⚙️ Verdict source: **Forensic rule-based engine** (learned model hasn't yet reached the sample/accuracy bar to take over)."
+                        else f"⚙️ Verdict source: **Forensic rule-based engine** - mode: {media_mode_choice}."
                     )
                     st.caption(media_source_note)
 
@@ -1806,33 +1760,6 @@ elif analysis_mode == "📷 Image & Video Authenticator":
                         with st.expander("🔬 Forensic analysis details"):
                             for note in forensic_notes:
                                 st.markdown(f"- {note}")
-
-elif analysis_mode == "🎙️ Voice Note Checker":
-    st.markdown("### 🎙️ Voice Note Checker")
-    st.markdown("Upload a WhatsApp voice note or any short audio clip. It's transcribed locally, then you can send the transcript straight into the Text Fact-Checker - same pipeline, same accuracy, just a different way in.")
-    st.caption("⚠️ Misleading WhatsApp voice notes follow a documented pattern: an emotionally-charged sender builds a personal connection, establishes credibility as an eyewitness/insider, then delivers the claim. Transcription quality depends on audio clarity and accent - always read the transcript before trusting it.")
-
-    if not HAS_WHISPER:
-        st.warning("Voice transcription isn't available on this deployment (faster-whisper not installed). Install it to enable this feature - see chat for setup details.")
-    else:
-        uploaded_audio = st.file_uploader("Choose audio file:", type=["mp3", "wav", "m4a", "ogg", "opus", "aac", "flac"])
-        if uploaded_audio is not None:
-            st.audio(uploaded_audio)
-            if st.button("🎙️ Transcribe Voice Note", type="primary"):
-                with st.spinner("Transcribing audio locally (first run loads the model, may take longer)..."):
-                    audio_bytes = uploaded_audio.getvalue()
-                    transcript, detected_lang = transcribe_audio(audio_bytes, filename_hint=uploaded_audio.name)
-
-                if transcript:
-                    st.success(f"Transcribed{f' (detected language: {detected_lang})' if detected_lang else ''}.")
-                    st.text_area("Transcript:", value=transcript, height=140, key="voice_transcript_display")
-                    st.caption("Review the transcript for errors before relying on it - speech-to-text isn't perfect, especially with background noise or strong accents.")
-                    if st.button("🔍 Send this transcript to the Fact-Checker"):
-                        st.session_state.test_claim = transcript
-                        st.session_state.analysis_mode_radio = "📰 Text / Article Fact-Checker"
-                        st.rerun()
-                else:
-                    st.warning("Couldn't extract a usable transcript from this audio - it may be silent, too short, or in a format that didn't decode cleanly.")
 
 else:
     st.markdown("### 🧠 Model Feedback & Active Learning Hub")
@@ -1877,8 +1804,8 @@ else:
 
         if claim_type == 'Media File':
             label_options = [
-                "🟢 REAL VIDEO", "🟢 REAL IMAGE / GRAPHIC", "✅ NO MANIPULATION SIGNALS DETECTED",
-                "🚨 FAKE AI GENERATED VIDEO", "🚨 FAKE AI GENERATED IMAGE",
+                "🟢 REAL IMAGE / GRAPHIC", "✅ NO MANIPULATION SIGNALS DETECTED",
+                "🚨 FAKE AI GENERATED IMAGE",
                 "⚠️ SIGNS OF MANIPULATION DETECTED", "⚠️ UNVERIFIED — NO STRONG SIGNAL EITHER WAY"
             ]
         else:
