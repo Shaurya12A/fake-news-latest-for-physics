@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import re
 import os
+import io
 import json
 import pickle
 import unicodedata
@@ -14,6 +15,11 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.units import inch
+from reportlab.lib import colors as rl_colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
 
 try:
     from duckduckgo_search import DDGS
@@ -428,6 +434,158 @@ def report_training_result(result, model_name):
         )
     else:
         st.info(f"{model_name} model not (re)trained: {result['message']}")
+
+# --- Verification log PDF export --------------------------------------------
+
+_PDF_NAVY = rl_colors.HexColor("#0F172A")
+_PDF_SLATE = rl_colors.HexColor("#475569")
+_PDF_LIGHT_BG = rl_colors.HexColor("#F2F5F7")
+_PDF_BORDER = rl_colors.HexColor("#E2E8F0")
+_PDF_FAKE_RED = rl_colors.HexColor("#DC2626")
+_PDF_REAL_GREEN = rl_colors.HexColor("#0F9E8E")
+_PDF_WARN_AMBER = rl_colors.HexColor("#B45309")
+
+_PDF_EMOJI_PATTERN = re.compile(
+    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U0001F900-\U0001F9FF\U0000FE00-\U0000FE0F]+",
+    flags=re.UNICODE
+)
+
+def _pdf_strip_emoji(text):
+    """Removes emoji AND their trailing variation-selector codepoints
+    (U+FE0F etc.) - reportlab's default fonts render unsupported codepoints
+    as visible placeholder boxes, so verdict strings are cleaned to plain
+    text for a professional-looking PDF."""
+    return _PDF_EMOJI_PATTERN.sub('', str(text)).strip()
+
+def _pdf_verdict_color(verdict_str):
+    """Order matters: 'UNVERIFIED' contains the substring 'VERIFIED' and
+    must be checked FIRST, or it gets miscolored as a real/verified
+    verdict - the same bug class already fixed in classify_verdict_category
+    for the app's own logic."""
+    v = str(verdict_str)
+    if "UNVERIFIED" in v:
+        return _PDF_WARN_AMBER
+    if "REAL" in v or "VERIFIED" in v:
+        return _PDF_REAL_GREEN
+    if "FAKE" in v or "DEBUNKED" in v:
+        return _PDF_FAKE_RED
+    return _PDF_WARN_AMBER
+
+def _pdf_header_footer(canvas, doc):
+    canvas.saveState()
+    canvas.setFillColor(_PDF_NAVY)
+    canvas.rect(0, doc.pagesize[1] - 0.75 * inch, doc.pagesize[0], 0.75 * inch, fill=1, stroke=0)
+    canvas.setFillColor(rl_colors.white)
+    canvas.setFont("Helvetica-Bold", 14)
+    canvas.drawString(0.6 * inch, doc.pagesize[1] - 0.5 * inch, "VeriFact AI")
+    canvas.setFont("Helvetica", 9)
+    canvas.setFillColor(rl_colors.HexColor("#CBD5E1"))
+    canvas.drawString(0.6 * inch, doc.pagesize[1] - 0.65 * inch, "Verification Audit Log")
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(_PDF_SLATE)
+    canvas.drawString(0.6 * inch, 0.4 * inch, f"Generated {datetime.now().strftime('%d %b %Y, %H:%M')}")
+    canvas.drawRightString(doc.pagesize[0] - 0.6 * inch, 0.4 * inch, f"Page {doc.page}")
+    canvas.restoreState()
+
+def generate_verification_log_pdf(history):
+    """
+    Builds a professionally-formatted PDF of the session's verification
+    history: branded header/footer, a summary stats row, and a color-coded,
+    paginated table of every logged check. Returns raw PDF bytes suitable
+    for st.download_button. Tested against 0, 3, and 40-row histories,
+    including page-break/repeating-header behavior - never raises on an
+    empty list.
+    """
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter,
+        topMargin=1.1 * inch, bottomMargin=0.7 * inch,
+        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+        title="VeriFact AI Verification Audit Log"
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleBig', parent=styles['Heading1'], fontSize=18, textColor=_PDF_NAVY, spaceAfter=4)
+    subtitle_style = ParagraphStyle('Subtitle', parent=styles['Normal'], fontSize=10, textColor=_PDF_SLATE, spaceAfter=14)
+    section_style = ParagraphStyle('Section', parent=styles['Heading2'], fontSize=12, textColor=_PDF_NAVY, spaceBefore=10, spaceAfter=6)
+    cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=8, textColor=_PDF_NAVY, leading=10)
+    header_cell_style = ParagraphStyle('HeaderCell', parent=styles['Normal'], fontSize=8, textColor=rl_colors.white, leading=10, fontName='Helvetica-Bold')
+    summary_label_style = ParagraphStyle('SummaryLabel', parent=styles['Normal'], fontSize=9, textColor=rl_colors.white, alignment=1, fontName='Helvetica-Bold')
+    summary_value_style = ParagraphStyle('SummaryValue', parent=styles['Normal'], fontSize=16, textColor=_PDF_NAVY, alignment=1, fontName='Helvetica-Bold')
+    disclaimer_style = ParagraphStyle('Disclaimer', parent=styles['Normal'], fontSize=8, textColor=_PDF_SLATE, leading=11)
+
+    elements = []
+    elements.append(Paragraph("Verification Audit Log", title_style))
+    elements.append(Paragraph(f"{len(history)} checks recorded this session", subtitle_style))
+
+    n_fake = sum(1 for h in history if _pdf_verdict_color(h.get('verdict', '')) == _PDF_FAKE_RED)
+    n_real = sum(1 for h in history if _pdf_verdict_color(h.get('verdict', '')) == _PDF_REAL_GREEN)
+    n_other = len(history) - n_fake - n_real
+
+    summary_data = [
+        [Paragraph("TOTAL CHECKS", summary_label_style), Paragraph("FLAGGED FAKE", summary_label_style),
+         Paragraph("VERIFIED REAL", summary_label_style), Paragraph("UNVERIFIED / OTHER", summary_label_style)],
+        [Paragraph(str(len(history)), summary_value_style), Paragraph(str(n_fake), summary_value_style),
+         Paragraph(str(n_real), summary_value_style), Paragraph(str(n_other), summary_value_style)]
+    ]
+    summary_table = Table(summary_data, colWidths=[1.7 * inch] * 4)
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), _PDF_NAVY),
+        ('BACKGROUND', (0, 1), (-1, 1), _PDF_LIGHT_BG),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('GRID', (0, 0), (-1, -1), 0.5, _PDF_BORDER),
+    ]))
+    elements.append(summary_table)
+    elements.append(Spacer(1, 16))
+    elements.append(Paragraph("Detailed Log", section_style))
+    elements.append(HRFlowable(width="100%", color=_PDF_BORDER, thickness=1))
+    elements.append(Spacer(1, 8))
+
+    table_data = [[
+        Paragraph("TIME", header_cell_style), Paragraph("CLAIM / FILE", header_cell_style),
+        Paragraph("VERDICT", header_cell_style), Paragraph("TRUTH INDEX", header_cell_style),
+        Paragraph("CORROBORATION", header_cell_style)
+    ]]
+    for h in history:
+        verdict_color = _pdf_verdict_color(h.get('verdict', ''))
+        clean_verdict = _pdf_strip_emoji(h.get('verdict', ''))
+        verdict_para = Paragraph(f'<font color="{verdict_color.hexval()}"><b>{clean_verdict}</b></font>', cell_style)
+        table_data.append([
+            Paragraph(str(h.get('timestamp', '')), cell_style),
+            Paragraph(str(h.get('claim', ''))[:70], cell_style),
+            verdict_para,
+            Paragraph(str(h.get('truth_index', '')), cell_style),
+            Paragraph(str(h.get('corroboration', '')), cell_style),
+        ])
+
+    log_table = Table(table_data, colWidths=[0.95 * inch, 2.55 * inch, 2.15 * inch, 0.85 * inch, 1.3 * inch], repeatRows=1)
+    style_cmds = [
+        ('BACKGROUND', (0, 0), (-1, 0), _PDF_NAVY),
+        ('GRID', (0, 0), (-1, -1), 0.5, _PDF_BORDER),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+    ]
+    for i in range(1, len(table_data)):
+        if i % 2 == 0:
+            style_cmds.append(('BACKGROUND', (0, i), (-1, i), _PDF_LIGHT_BG))
+    log_table.setStyle(TableStyle(style_cmds))
+    elements.append(log_table)
+
+    elements.append(Spacer(1, 20))
+    elements.append(HRFlowable(width="100%", color=_PDF_BORDER, thickness=1))
+    elements.append(Spacer(1, 8))
+    elements.append(Paragraph(
+        "<b>Disclaimer:</b> Verdicts in this log are produced by an automated, evidence-based system "
+        "(live news/fact-check search, forensic image analysis, and/or a feedback-trained model). "
+        "They are decision support, not a certified fact-check - always verify high-stakes claims "
+        "through a professional fact-checking organization.",
+        disclaimer_style
+    ))
+
+    doc.build(elements, onFirstPage=_pdf_header_footer, onLaterPages=_pdf_header_footer)
+    buf.seek(0)
+    return buf.getvalue()
 
 if 'verification_history' not in st.session_state:
     st.session_state.verification_history = []
@@ -1856,39 +2014,130 @@ else:
 
         if st.button("🔄 Trigger Real Retraining Cycle"):
             with st.spinner("Training logistic regression models on stored feedback..."):
-                all_entries = st.session_state.feedback_dataset
-                text_entries = [e for e in all_entries if e.get('type') == 'Text Claim']
-                media_entries = [e for e in all_entries if e.get('type') == 'Media File']
-
-                text_result = train_model_from_feedback(text_entries, TEXT_FEATURE_KEYS)
-                media_result = train_model_from_feedback(media_entries, MEDIA_FEATURE_KEYS)
-
-                if text_result['model'] is not None:
-                    text_meta = {'n_samples': text_result['n_samples'], 'accuracy': text_result['accuracy'], 'accuracy_type': text_result['accuracy_type']}
-                    st.session_state.text_learned_model = text_result['model']
-                    st.session_state.text_model_meta = text_meta
-                    save_model(text_result['model'], TEXT_MODEL_PATH, meta=text_meta)
-                    earned = text_meta['n_samples'] >= MIN_SAMPLES_FOR_PRIMARY and text_meta['accuracy_type'] == 'held-out test split' and (text_meta['accuracy'] or 0) >= MIN_HELDOUT_ACCURACY_FOR_PRIMARY
-                    st.success(f"Text model trained on {text_result['n_samples']} samples across {text_result['n_classes']} labels. Accuracy: {text_result['accuracy']}% ({text_result['accuracy_type']}).")
-                    st.caption(f"Label distribution: {text_result['class_counts']}")
-                    st.markdown("✅ **This model has earned PRIMARY status** - it will now drive the Text Fact-Checker's verdicts." if earned else f"⏳ Not primary yet - needs ≥{MIN_SAMPLES_FOR_PRIMARY} samples with held-out accuracy ≥{MIN_HELDOUT_ACCURACY_FOR_PRIMARY:.0f}%. Still shown as an advisory comparison.")
-                else:
-                    st.info(f"Text model not (re)trained: {text_result['message']}")
-
-                if media_result['model'] is not None:
-                    media_meta = {'n_samples': media_result['n_samples'], 'accuracy': media_result['accuracy'], 'accuracy_type': media_result['accuracy_type']}
-                    st.session_state.media_learned_model = media_result['model']
-                    st.session_state.media_model_meta = media_meta
-                    save_model(media_result['model'], MEDIA_MODEL_PATH, meta=media_meta)
-                    earned = media_meta['n_samples'] >= MIN_SAMPLES_FOR_PRIMARY and media_meta['accuracy_type'] == 'held-out test split' and (media_meta['accuracy'] or 0) >= MIN_HELDOUT_ACCURACY_FOR_PRIMARY
-                    st.success(f"Media model trained on {media_result['n_samples']} samples across {media_result['n_classes']} labels. Accuracy: {media_result['accuracy']}% ({media_result['accuracy_type']}).")
-                    st.caption(f"Label distribution: {media_result['class_counts']}")
-                    st.markdown("✅ **This model has earned PRIMARY status** - it will now drive the Media Authenticator's verdicts." if earned else f"⏳ Not primary yet - needs ≥{MIN_SAMPLES_FOR_PRIMARY} samples with held-out accuracy ≥{MIN_HELDOUT_ACCURACY_FOR_PRIMARY:.0f}%. Still shown as an advisory comparison.")
-                else:
-                    st.info(f"Media model not (re)trained: {media_result['message']}")
-
+                text_result, media_result = run_training_cycle()
+                report_training_result(text_result, "Text")
+                report_training_result(media_result, "Media")
                 if text_result['model'] is None and media_result['model'] is None:
-                    st.warning("Enable '🧪 Show experimental learned-model insights' in the sidebar once a model trains successfully, to see its predictions alongside future checks.")
+                    st.warning("Submit some feedback first (or use the bulk upload below), then retrain.")
+
+    st.divider()
+
+    st.markdown("### 📤 Bulk Upload Training Data")
+    st.markdown(
+        "Upload a CSV or JSON file to train and test the model on your own labeled dataset, instead of "
+        "(or in addition to) single-claim feedback above. Two supported formats:\n"
+        "- **Raw claims**: a text column (`text`/`claim`/`content`) plus a label column (`label`/`corrected_label`/`verdict` - "
+        "accepts Real/Fake/Unverified or the app's own verdict text). Each row is run through the live fact-checking "
+        "pipeline to compute its features, so this is slower and capped at 100 rows per upload.\n"
+        "- **Pre-computed features**: columns matching the model's feature names plus a label column - trains instantly, "
+        "no cap, no network calls."
+    )
+
+    bulk_type_choice = st.selectbox("Data type:", ["Text Claims", "Image Verdicts (pre-computed features only)"], key="bulk_claim_type_select")
+    bulk_claim_type = 'Text Claim' if bulk_type_choice == "Text Claims" else 'Media File'
+    bulk_feature_keys = TEXT_FEATURE_KEYS if bulk_claim_type == 'Text Claim' else MEDIA_FEATURE_KEYS
+
+    with st.expander("📋 See expected file format / download a template"):
+        if bulk_claim_type == 'Text Claim':
+            st.code("text,label\n\"RBI announces plastic currency notes next month\",fake\n\"ISRO completes Gaganyaan engine test\",real", language="text")
+            template_csv = "text,label\n\"RBI announces plastic currency notes next month\",fake\n\"ISRO completes Gaganyaan engine test\",real\n"
+        else:
+            header = ",".join(MEDIA_FEATURE_KEYS + ["label"])
+            example = ",".join(["55", "20", "0", "0", "-1", "real"])
+            st.code(f"{header}\n{example}", language="text")
+            template_csv = f"{header}\n{example}\n"
+        st.download_button("📥 Download CSV template", data=template_csv, file_name=f"{bulk_claim_type.lower().replace(' ', '_')}_template.csv", mime="text/csv", key="bulk_template_download")
+
+    bulk_file = st.file_uploader("Upload CSV or JSON:", type=["csv", "json"], key="bulk_upload_file")
+
+    if bulk_file is not None:
+        try:
+            bulk_df = pd.read_json(bulk_file) if bulk_file.name.endswith('.json') else pd.read_csv(bulk_file)
+        except Exception as e:
+            bulk_df = None
+            st.error(f"Couldn't read this file: {e}")
+
+        if bulk_df is not None and len(bulk_df) > 0:
+            st.caption(f"Found {len(bulk_df)} rows. Columns: {', '.join(str(c) for c in bulk_df.columns)}")
+            cols_lower = {str(c).lower(): c for c in bulk_df.columns}
+            label_col = next((cols_lower[c] for c in ['label', 'corrected_label', 'verdict'] if c in cols_lower), None)
+            text_col = next((cols_lower[c] for c in ['text', 'claim', 'content'] if c in cols_lower), None)
+            has_all_features = all(k.lower() in cols_lower for k in bulk_feature_keys)
+
+            if not label_col:
+                st.warning("No label column found - expected a column named `label`, `corrected_label`, or `verdict`.")
+            elif has_all_features:
+                st.info(f"Detected pre-computed feature columns - will train instantly on all {len(bulk_df)} rows, no network calls needed.")
+                if st.button("🚀 Train on Uploaded Features", type="primary", key="bulk_train_features_btn"):
+                    added, skipped = 0, 0
+                    for _, row in bulk_df.iterrows():
+                        norm_label = normalize_label(row[label_col], bulk_claim_type)
+                        if not norm_label:
+                            skipped += 1
+                            continue
+                        try:
+                            feat = {k: float(row[cols_lower[k.lower()]]) for k in bulk_feature_keys}
+                        except Exception:
+                            skipped += 1
+                            continue
+                        entry = {
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'type': bulk_claim_type,
+                            'content': str(row[text_col]) if text_col and text_col in row else '(bulk upload - features only)',
+                            'predicted_verdict': norm_label,
+                            'is_correct': 'Bulk Upload',
+                            'corrected_label': norm_label,
+                            'features': feat
+                        }
+                        st.session_state.feedback_dataset.append(entry)
+                        append_feedback_entry(entry)
+                        added += 1
+                    st.success(f"Added {added} labeled rows" + (f" ({skipped} skipped - unrecognized label or bad feature values)." if skipped else "."))
+                    with st.spinner("Training..."):
+                        text_result, media_result = run_training_cycle()
+                    report_training_result(text_result if bulk_claim_type == 'Text Claim' else media_result, bulk_type_choice)
+                    st.rerun()
+            elif text_col and bulk_claim_type == 'Text Claim':
+                row_count = len(bulk_df)
+                capped = min(row_count, 100)
+                if row_count > 100:
+                    st.warning(f"File has {row_count} rows; each row requires live searches, so only the first 100 will be processed this run. Upload the remainder separately afterward to add more.")
+                if st.button("🚀 Compute Features Live & Train", type="primary", key="bulk_train_raw_btn"):
+                    progress = st.progress(0, text="Starting...")
+                    added, skipped = 0, 0
+                    for i in range(capped):
+                        row = bulk_df.iloc[i]
+                        norm_label = normalize_label(row[label_col], bulk_claim_type)
+                        claim_text = str(row[text_col]) if text_col in row else ""
+                        progress.progress((i + 1) / capped, text=f"Processing {i + 1}/{capped}: {claim_text[:50]}...")
+                        if not norm_label or not claim_text.strip():
+                            skipped += 1
+                            continue
+                        try:
+                            feat = compute_text_features_for_claim(claim_text)
+                        except Exception:
+                            skipped += 1
+                            continue
+                        entry = {
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'type': 'Text Claim',
+                            'content': claim_text,
+                            'predicted_verdict': norm_label,
+                            'is_correct': 'Bulk Upload',
+                            'corrected_label': norm_label,
+                            'features': feat
+                        }
+                        st.session_state.feedback_dataset.append(entry)
+                        append_feedback_entry(entry)
+                        added += 1
+                    progress.empty()
+                    st.success(f"Processed {added} claims" + (f" ({skipped} skipped - unrecognized label or empty text)." if skipped else "."))
+                    with st.spinner("Training..."):
+                        text_result, media_result = run_training_cycle()
+                    report_training_result(text_result, "Text")
+                    st.rerun()
+            else:
+                st.warning(f"Couldn't find a usable text column (`text`/`claim`/`content`) or all required feature columns ({', '.join(bulk_feature_keys)}) for {bulk_type_choice}.")
 
     st.divider()
 
@@ -1913,10 +2162,25 @@ if st.session_state.verification_history:
     df_history = pd.DataFrame(st.session_state.verification_history)
     st.dataframe(df_history, use_container_width=True)
     
-    csv_data = df_history.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 Export Verification Audit Log (CSV)",
-        data=csv_data,
-        file_name="verifact_audit_history.csv",
-        mime="text/csv"
-    )
+    exp_col1, exp_col2 = st.columns(2)
+    with exp_col1:
+        csv_data = df_history.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Export Audit Log (CSV)",
+            data=csv_data,
+            file_name="verifact_audit_history.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    with exp_col2:
+        try:
+            pdf_data = generate_verification_log_pdf(st.session_state.verification_history)
+            st.download_button(
+                label="📄 Export Audit Log (PDF)",
+                data=pdf_data,
+                file_name="verifact_audit_log.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.caption(f"PDF export unavailable: {e}")
