@@ -1603,20 +1603,42 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                 
             st.markdown("<br>", unsafe_allow_html=True)
             
-            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📲 WhatsApp Debunk Card", "🟢 Live News & Source Authority", "🕰️ Claim Timeline", "💬 Forward-Back Reply", "📊 Analytics Details"])
+            tab1, tab2, tab3, tab4 = st.tabs(["📲 WhatsApp Debunk Card", "🟢 Live News & Source Authority", "🕰️ Claim Timeline", "💬 Forward-Back Reply"])
             
             with tab1:
                 st.markdown("#### Ready-to-Share WhatsApp Fact-Check Briefing")
-                debunk_text = f"""*🛡️ VERIFACT AI FACT CHECK ALERT*
-----------------------------------
-*Claim:* "{user_input[:100]}..."
-*Verdict:* {final_verdict}
-*Truth Index:* {final_truth_index}%
-*Single Article Word Overlap:* {corroboration_pct}%
 
-*Summary:* {summary}
-*Verified via VeriFact AI Command Center*"""
+                # Only truncate (and show "...") when the claim actually IS
+                # longer than the snippet limit - the old version always
+                # appended "..." even for short claims, which looked wrong.
+                claim_snippet = user_input.strip()
+                if len(claim_snippet) > 120:
+                    claim_snippet = claim_snippet[:120].rstrip() + "..."
+
+                debunk_lines = [
+                    "*🛡️ VERIFACT AI FACT CHECK ALERT*",
+                    "----------------------------------",
+                    f'*Claim:* "{claim_snippet}"',
+                    f"*Verdict:* {final_verdict}",
+                    f"*Truth Index:* {final_truth_index}%  |  *Match Confidence:* {corroboration_pct}%",
+                ]
+                if technique_info:
+                    debunk_lines.append(f"*Flag Type:* {technique_info['technique']}")
+                debunk_lines.append("")
+                debunk_lines.append(f"*Summary:* {summary}")
+                if best_match and best_match.get('link'):
+                    debunk_lines.append("")
+                    debunk_lines.append(f"*Reference:* {best_match['source']}")
+                    debunk_lines.append(best_match['link'])
+                debunk_lines.append("")
+                debunk_lines.append(f"_Checked via VeriFact AI · {datetime.now().strftime('%d %b %Y, %H:%M')}_")
+                debunk_text = "\n".join(debunk_lines)
+
                 st.code(debunk_text, language="markdown")
+
+                wa_link = "https://wa.me/?text=" + urllib.parse.quote(debunk_text)
+                st.link_button("📲 Open in WhatsApp", wa_link, use_container_width=True)
+                st.caption("Opens WhatsApp with this message pre-filled, ready to pick a chat and send - or copy the text above directly.")
                 
             with tab2:
                 st.markdown("#### Top Matching News Articles Found")
@@ -1664,27 +1686,6 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
                 reply_text = generate_reply_card(final_verdict, source_hint, reply_lang)
                 st.text_area("Message:", value=reply_text, height=100, key="reply_card_text", disabled=True)
                 st.code(reply_text, language=None)
-                
-            with tab5:
-                st.json({
-                    "final_verdict": final_verdict,
-                    "verdict_source": verdict_source,
-                    "rule_based_verdict": verdict,
-                    "learned_model_prediction": learned_pred,
-                    "single_article_word_overlap_ratio": overlap_ratio,
-                    "matched_key_words": matched_words,
-                    "total_key_words": total_words,
-                    "vector_cosine_similarity": raw_max_sim,
-                    "sensationalism_score": sensationalism_score,
-                    "debunk_signal_detected": debunk_flag,
-                    "debunk_detection_method": debunk_method,
-                    "nli_contradiction_score": nli_score,
-                    "nli_available": HAS_NLI,
-                    "known_hoax_pattern_matched": known_hoax_flag,
-                    "factcheck_source_matched": is_factcheck_source,
-                    "extracted_queries": queries,
-                    "duckduckgo_fallback_enabled": HAS_DDG
-                })
 
 elif analysis_mode == "📷 Image Authenticator":
     st.markdown("### 📷 Image Authenticator Engine")
