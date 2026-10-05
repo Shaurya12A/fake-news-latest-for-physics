@@ -668,10 +668,10 @@ def analyze_linguistic_risk(text):
 
 @st.cache_resource
 def load_trained_model():
-    """Load the TF-IDF vectorizer and Logistic Regression model."""
+    """Load the user's trained TF-IDF vectorizer and binary fake-news model."""
     try:
-        model = joblib.load("model.pkl")
-        vectorizer = joblib.load("vectorizer.pkl")
+        vectorizer = joblib.load("tfidf_vectorizer.pkl")
+        model = joblib.load("model (1).pkl")
         return model, vectorizer, None
     except Exception as e:
         return None, None, str(e)
@@ -865,99 +865,97 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
 elif analysis_mode == "🤖 Trained Model Predictor":
     st.markdown("### 🤖 Trained Model Predictor")
     st.markdown(
-        "<p style='color:#94a3b8;'>TF-IDF + Logistic Regression prediction using the locally trained model. This mode does not perform live web searches.</p>",
+        "<p style='color:#94a3b8;'>TF-IDF + Logistic Regression prediction using your trained fake-news model. This mode does not perform live web searches.</p>",
         unsafe_allow_html=True
     )
 
     model_claim = st.text_area(
-        "Enter a claim to predict:",
-        height=160,
-        placeholder="Example: The Earth revolves around the Sun."
+        "Enter news text or a claim to predict:",
+        height=180,
+        placeholder="Paste a headline, claim, or news article here..."
     )
 
     if trained_model is None or trained_vectorizer is None:
         st.error(
-            "The trained model could not be loaded. Make sure model.pkl and vectorizer.pkl are in the same folder as app.py."
+            "The trained model could not be loaded. Make sure these files are in the same folder as app.py: "
+            "tfidf_vectorizer.pkl and model (1).pkl"
             + (f"\n\nLoading error: {model_load_error}" if model_load_error else "")
         )
     else:
-        if st.button("🤖 Predict Claim", type="primary", use_container_width=True):
+        if st.button("🤖 Analyze News", type="primary", use_container_width=True):
             if not model_claim.strip():
-                st.warning("Please enter a claim first.")
+                st.warning("Please enter some text before analyzing.")
             else:
-                features = trained_vectorizer.transform([model_claim.strip()])
-                prediction = trained_model.predict(features)[0]
-                probabilities = trained_model.predict_proba(features)[0]
-                class_names = list(trained_model.classes_)
+                # Match the preprocessing used by the supplied trained model.
+                cleaned = re.sub(r'^.*?\(Reuters\)\s*-\s*', '', model_claim, flags=re.IGNORECASE)
+                cleaned = re.sub(r'^.*?[A-Z]{2,}\s*\(AP\)\s*-\s*', '', cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r'https?://\S+|www\.\S+', '', cleaned)
+                cleaned = re.sub(r'<.*?>', '', cleaned)
+                cleaned = re.sub(r'[^a-zA-Z\s]', '', cleaned)
+                cleaned = cleaned.lower().strip()
 
-                # The displayed Truth Index is specifically the model's estimated
-                # probability that the claim belongs to the TRUE class.
-                true_probability = 0.0
-                if "TRUE" in class_names:
-                    true_probability = float(probabilities[class_names.index("TRUE")])
-                truth_index = int(round(true_probability * 100))
-
-                if prediction == "TRUE":
-                    status_class = "badge-real"
-                    display_verdict = "🟢 TRUE"
-                    summary = (
-                        f"The trained model classifies this claim as TRUE with "
-                        f"{max(probabilities) * 100:.1f}% model confidence."
-                    )
-                elif prediction == "FALSE":
-                    status_class = "badge-fake"
-                    display_verdict = "🚨 FALSE"
-                    summary = (
-                        f"The trained model classifies this claim as FALSE with "
-                        f"{max(probabilities) * 100:.1f}% model confidence."
-                    )
+                if not cleaned:
+                    st.warning("The entered text became empty after preprocessing. Please enter a longer news claim or article.")
                 else:
-                    status_class = "badge-warning"
-                    display_verdict = "⚠️ UNCERTAIN"
-                    summary = (
-                        f"The trained model could not confidently classify this claim as TRUE or FALSE "
-                        f"and assigned it to the UNCERTAIN class with {max(probabilities) * 100:.1f}% model confidence."
+                    vec_input = trained_vectorizer.transform([cleaned])
+                    prediction = trained_model.predict(vec_input)[0]
+                    proba = trained_model.predict_proba(vec_input)[0]
+
+                    # The supplied model is binary: 0 = REAL, 1 = FAKE.
+                    # We introduce UNCERTAIN only when the model's top probability
+                    # is below 60%, rather than treating it as a trained third class.
+                    classes = list(trained_model.classes_)
+                    probability_by_class = {cls: float(prob) for cls, prob in zip(classes, proba)}
+
+                    real_prob = probability_by_class.get(0, probability_by_class.get('REAL', 0.0))
+                    fake_prob = probability_by_class.get(1, probability_by_class.get('FAKE', 0.0))
+                    top_confidence = max(real_prob, fake_prob)
+                    truth_index = int(round(real_prob * 100))
+
+                    UNCERTAIN_THRESHOLD = 0.60
+
+                    if top_confidence < UNCERTAIN_THRESHOLD:
+                        status_class = "badge-warning"
+                        display_verdict = "⚠️ UNCERTAIN"
+                        summary = (
+                            f"The model does not have enough confidence to classify this as TRUE or FALSE. "
+                            f"Its highest prediction confidence is {top_confidence * 100:.1f}%."
+                        )
+                    elif prediction == 1:
+                        status_class = "badge-fake"
+                        display_verdict = "🚨 FALSE"
+                        summary = (
+                            f"The trained model predicts this news as FALSE with "
+                            f"{fake_prob * 100:.1f}% confidence."
+                        )
+                    else:
+                        status_class = "badge-real"
+                        display_verdict = "🟢 TRUE"
+                        summary = (
+                            f"The trained model predicts this news as TRUE with "
+                            f"{real_prob * 100:.1f}% confidence."
+                        )
+
+                    st.markdown(f"""
+                    <div style="
+                        background:rgba(30,41,59,0.82);
+                        padding:36px;
+                        border-radius:22px;
+                        margin-top:18px;
+                        border:1px solid rgba(148,163,184,0.16);
+                        box-shadow:0 10px 30px rgba(0,0,0,0.12);
+                    ">
+                        <span class="{status_class}">{display_verdict}</span>
+                        <h1 style="color:#f8fafc; font-size:3rem; margin:35px 0 28px 0;">
+                            Truth Index: {truth_index}%
+                        </h1>
+                        <p style="color:#cbd5e1; font-size:1.05rem; line-height:1.8; margin:0;">
+                            {summary}
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    st.caption(
+                        "Truth Index represents the model's estimated probability that the text is REAL. "
+                        "UNCERTAIN is shown when neither REAL nor FAKE reaches 60% confidence."
                     )
-
-                st.markdown(f"""
-                <div style="
-                    background:rgba(30,41,59,0.82);
-                    padding:36px;
-                    border-radius:22px;
-                    margin-top:18px;
-                    border:1px solid rgba(148,163,184,0.16);
-                    box-shadow:0 10px 30px rgba(0,0,0,0.12);
-                ">
-                    <span class="{status_class}">{display_verdict}</span>
-                    <h1 style="color:#f8fafc; font-size:3rem; margin:35px 0 28px 0;">
-                        Truth Index: {truth_index}%
-                    </h1>
-                    <p style="color:#cbd5e1; font-size:1.05rem; line-height:1.8; margin:0;">
-                        {summary}
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
-
-                st.caption(
-                    "Model-only prediction: this result is based on patterns learned from FEVER + LIAR training data "
-                    "and does not independently verify current facts on the web."
-                )
-
-
-st.divider()
-if st.session_state.verification_history:
-    st.markdown("### 📜 Session Verification Audit Log")
-    df_history = pd.DataFrame(st.session_state.verification_history)
-    st.dataframe(df_history, use_container_width=True)
-    
-    try:
-        pdf_data = generate_verification_log_pdf(st.session_state.verification_history)
-        st.download_button(
-            label="📄 Export Audit Log (PDF)",
-            data=pdf_data,
-            file_name="verifact_audit_log.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
-    except Exception as e:
-        st.caption(f"PDF export unavailable: {e}")
