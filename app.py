@@ -670,8 +670,8 @@ def analyze_linguistic_risk(text):
 def load_trained_model():
     """Load the user's trained TF-IDF vectorizer and binary fake-news model."""
     try:
-        vectorizer = joblib.load("tfidf_vectorizer.pkl")
-        model = joblib.load("model (1).pkl")
+        vectorizer = joblib.load("vectorizer.pkl")
+        model = joblib.load("model (2).pkl")
         return model, vectorizer, None
     except Exception as e:
         return None, None, str(e)
