@@ -864,10 +864,7 @@ if analysis_mode == "📰 Text / Article Fact-Checker":
 
 elif analysis_mode == "🤖 Trained Model Predictor":
     st.markdown("### 🤖 Trained Model Predictor")
-    st.markdown(
-        "<p style='color:#94a3b8;'>TF-IDF + Logistic Regression prediction using your trained fake-news model. This mode does not perform live web searches.</p>",
-        unsafe_allow_html=True
-    )
+    
 
     model_claim = st.text_area(
         "Enter news text or a claim to predict:",
