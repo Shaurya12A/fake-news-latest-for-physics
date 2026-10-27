@@ -13,7 +13,8 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 st.set_page_config(  # Configure Streamlit page attributes
     page_title="VeriFact AI — Misinformation Command Center",  # Browser tab title
     page_icon="🛡️",  # Browser tab favicon
-    layout="wide"  # Utilize full screen width layout
+    layout="wide",  # Utilize full screen width layout
+    initial_sidebar_state="expanded"  # Keep sidebar expanded by default
 )
 
 # Configure the dashboard appearance with custom CSS
@@ -233,159 +234,120 @@ def train_local_model():  # Function to train and serialize the ML model
 
     return model, vectorizer, accuracy, len(data), y_test, test_pred  # Return artifacts and performance stats
 
-# Show the app title and mode selector on the main page instead of a sidebar
-st.markdown("<h2 style='color:#34d399; margin-bottom:0;'>🛡️ VeriFact AI</h2>", unsafe_allow_html=True)
-st.markdown("<p style='color:#94a3b8; font-size:0.8rem;'>Misinformation Command Center</p>", unsafe_allow_html=True)
+# Sidebar contains only sample news buttons. Clicking one places its text in the prediction box.
+EXAMPLE_NEWS = {
+    "Example 1 — Science": "The Earth revolves around the Sun, completing one orbit in about 365 days.",
+    "Example 2 — Health Claim": "A viral message claims that drinking bleach can safely cure common illnesses.",
+    "Example 3 — Unverified Report": "A social media post claims that all schools in a city will be closed tomorrow, but it does not cite an official announcement.",
+}
 
-analysis_mode = st.radio(  # Main-page selector for choosing the app mode
-    "Analysis Mode",
-    [
-        "🤖 Trained Model Predictor",  # Prediction mode
-        "🛠️ Train / Update Model"  # Training mode
-    ],
-    index=0,  # Default to prediction mode
-    horizontal=True  # Display options horizontally without a sidebar
+def choose_example(example_text):  # Put the selected sample into the text area before Streamlit reruns
+    st.session_state["model_claim"] = example_text
+
+with st.sidebar:  # Keep the sidebar focused only on example news
+    st.markdown("### 📰 Example News")  # Sidebar heading
+    st.caption("Select an example to fill the prediction box.")  # Brief usage hint
+    for example_title, example_text in EXAMPLE_NEWS.items():  # Create one button for each sample
+        st.button(
+            example_title,  # Button label
+            key=f"example_{example_title}",  # Unique key for each button
+            use_container_width=True,  # Make the button fit the sidebar width
+            on_click=choose_example,  # Fill the prediction box when clicked
+            args=(example_text,)  # Pass the sample text to the callback
+        )
+
+# Main page heading and prediction interface
+st.markdown("<h1 style='color:#f8fafc; margin-bottom:5px;'>VeriFact AI Command Center</h1>", unsafe_allow_html=True)  # Main view heading
+st.markdown("<p style='color:#94a3b8;'>Local Fake-News Prediction</p>", unsafe_allow_html=True)  # Main view subtitle
+st.markdown("### 🤖 Trained Model Predictor")  # Predictor section heading
+st.markdown(  # Explain the prediction mode
+    "<p style='color:#94a3b8;'>TF-IDF + Logistic Regression prediction using your trained fake-news model. This mode does not perform live web searches.</p>",
+    unsafe_allow_html=True
 )
 
-st.markdown("<h1 style='color:#f8fafc; margin-bottom:5px;'>VeriFact AI Command Center</h1>", unsafe_allow_html=True)  # Main view heading
-st.markdown("<p style='color:#94a3b8;'>Local Fake-News Prediction & Model Training</p>", unsafe_allow_html=True)  # Main view subtitle
+model_claim = st.text_area(  # Multi-line text input field for news text
+    "Enter news text or a claim to predict:",  # Input field label
+    height=180,  # Box height in pixels
+    placeholder="Paste a headline, claim, or news article here...",  # Placeholder helper text
+    key="model_claim"  # Shared state lets sidebar buttons populate this field
+)
 
-if analysis_mode == "🛠️ Train / Update Model":  # View block for model training mode
-    st.markdown("<h3>🛠️ Train / Update Fake-News Model</h3>")  # Section title
-    st.markdown(  # Mode explanation
-        "<p style='color:#94a3b8;'>Train the same TF-IDF + Logistic Regression model using downloaded FEVER and LIAR datasets stored locally in the <b>datasets</b> folder.</p>",
-        unsafe_allow_html=True
+if trained_model is None or trained_vectorizer is None:  # Verify model and vectorizer exist
+    st.error(  # Display error alert if artifacts are missing
+        "The trained model could not be loaded. Make sure the model and vectorizer files are in the same folder as app.py. "
+        + (f"\n\nLoading error: {model_load_error}" if model_load_error else "")
     )
+else:  # Model files loaded successfully
+    if st.button("🤖 Analyze News", type="primary", use_container_width=True):  # Trigger prediction action
+        if not model_claim.strip():  # Check for blank or whitespace input
+            st.warning("Please enter some text before analyzing.")  # Warn user about missing text
+        else:  # Text input provided
+            cleaned = re.sub(r'^.*?\(Reuters\)\s*-\s*', '', model_claim, flags=re.IGNORECASE)  # Strip Reuters wire prefixes
+            cleaned = re.sub(r'^.*?[A-Z]{2,}\s*\(AP\)\s*-\s*', '', cleaned, flags=re.IGNORECASE)  # Strip AP wire prefixes
+            cleaned = re.sub(r'https?://\S+|www\.\S+', '', cleaned)  # Remove web addresses
+            cleaned = re.sub(r'<.*?>', '', cleaned)  # Remove HTML tags
+            cleaned = re.sub(r'[^a-zA-Z\s]', '', cleaned)  # Keep letters and whitespace only
+            cleaned = cleaned.lower().strip()  # Normalize case and trim whitespace
 
-    st.info(  # Informational callout box
-        "Dataset sources: FEVER — Sheffield NLP; LIAR — William Yang Wang / UCSB. "
-        "The app uses local downloaded copies and does not download datasets during training."
-    )
+            if not cleaned:  # Check whether preprocessing removed all text
+                st.warning("The entered text became empty after preprocessing. Please enter a longer news claim or article.")
+            else:
+                vec_input = trained_vectorizer.transform([cleaned])  # Convert text into TF-IDF features
+                prediction = trained_model.predict(vec_input)[0]  # Predict the class label
+                proba = trained_model.predict_proba(vec_input)[0]  # Get estimated class probabilities
 
-    st.markdown("<strong>Expected folder structure:</strong>")  # Directory requirements label
-    st.code(  # Display expected folder hierarchy in code block
-        "datasets/\n"
-        "├── fever_train.parquet\n"
-        "├── liar_train.tsv\n"
-        "├── liar_valid.tsv\n"
-        "└── liar_test.tsv"
-    )
+                classes = list(trained_model.classes_)  # Read model class labels
+                probability_by_class = {cls: float(prob) for cls, prob in zip(classes, proba)}  # Pair labels with probabilities
 
-    if st.button("🚀 Train / Update Model", type="primary", use_container_width=True):  # Trigger model training button
-        try:  # Handle runtime training exceptions
-            with st.spinner("Loading local datasets, vectorizing text and training the model..."):  # Show loading spinner
-                new_model, new_vectorizer, accuracy, sample_count, y_test, test_pred = train_local_model()  # Run training pipeline
+                real_prob = probability_by_class.get(0, probability_by_class.get('REAL', 0.0))  # Probability for REAL class
+                fake_prob = probability_by_class.get(1, probability_by_class.get('FAKE', 0.0))  # Probability for FAKE class
+                top_confidence = max(real_prob, fake_prob)  # Highest estimated class confidence
+                truth_index = int(round(real_prob * 100))  # Display REAL probability as the Truth Index
 
-            trained_model = new_model  # Update active in-memory model
-            trained_vectorizer = new_vectorizer  # Update active in-memory vectorizer
+                UNCERTAIN_THRESHOLD = 0.60  # Minimum confidence required to show a definite verdict
 
-            st.success("Model training completed and model files were saved.")  # Display success feedback
-            st.metric("Test Accuracy", f"{accuracy * 100:.2f}%")  # Display model accuracy metric
-            st.caption(f"Training samples after cleaning/deduplication: {sample_count}")  # Display total cleaned dataset count
-
-            st.markdown("<h4>Classification Report</h4>")  # Section label for detailed metrics
-            st.code(classification_report(  # Display precision, recall, and F1-score report
-                y_test,  # Ground truth test labels
-                test_pred,  # Model test predictions
-                target_names=["REAL", "FAKE"]  # Class label names
-            ))
-
-            st.markdown("<h4>Saved Model Files</h4>")  # Section label for generated files
-            st.code("tfidf_vectorizer.pkl\nmodel (1).pkl")  # List exported file names
-
-        except Exception as e:  # Catch and display training errors
-            st.error(f"Training failed: {e}")  # Render training error alert
-
-elif analysis_mode == "🤖 Trained Model Predictor":  # View block for prediction inference mode
-    st.markdown("<h3>🤖 Trained Model Predictor</h3>")  # Section title
-    st.markdown(  # Mode description
-        "<p style='color:#94a3b8;'>TF-IDF + Logistic Regression prediction using your trained fake-news model. This mode does not perform live web searches.</p>",
-        unsafe_allow_html=True
-    )
-
-    model_claim = st.text_area(  # Multi-line text input field for news text
-        "Enter news text or a claim to predict:",  # Input field label
-        height=180,  # Box height in pixels
-        placeholder="Paste a headline, claim, or news article here..."  # Placeholder helper text
-    )
-
-    if trained_model is None or trained_vectorizer is None:  # Verify model and vectorizer exist
-        st.error(  # Display error alert if artifacts are missing
-            "The trained model could not be loaded. Make sure these files are in the same folder as app.py: "
-            "tfidf_vectorizer.pkl and model (1).pkl"
-            + (f"\n\nLoading error: {model_load_error}" if model_load_error else "")
-        )
-    else:  # Model files loaded successfully
-        if st.button("🤖 Analyze News", type="primary", use_container_width=True):  # Trigger prediction action
-            if not model_claim.strip():  # Check for blank or whitespace input
-                st.warning("Please enter some text before analyzing.")  # Warn user about missing text
-            else:  # Text input provided
-                cleaned = re.sub(r'^.*?\(Reuters\)\s*-\s*', '', model_claim, flags=re.IGNORECASE)  # Strip Reuters wire prefixes
-                cleaned = re.sub(r'^.*?[A-Z]{2,}\s*\(AP\)\s*-\s*', '', cleaned, flags=re.IGNORECASE)
-                cleaned = re.sub(r'https?://\S+|www\.\S+', '', cleaned)
-                cleaned = re.sub(r'<.*?>', '', cleaned)
-                cleaned = re.sub(r'[^a-zA-Z\s]', '', cleaned)
-                cleaned = cleaned.lower().strip()
-
-                if not cleaned:
-                    st.warning("The entered text became empty after preprocessing. Please enter a longer news claim or article.")
-                else:
-                    vec_input = trained_vectorizer.transform([cleaned])
-                    prediction = trained_model.predict(vec_input)[0]
-                    proba = trained_model.predict_proba(vec_input)[0]
-
-                    classes = list(trained_model.classes_)
-                    probability_by_class = {cls: float(prob) for cls, prob in zip(classes, proba)}
-
-                    real_prob = probability_by_class.get(0, probability_by_class.get('REAL', 0.0))
-                    fake_prob = probability_by_class.get(1, probability_by_class.get('FAKE', 0.0))
-                    top_confidence = max(real_prob, fake_prob)
-                    truth_index = int(round(real_prob * 100))
-
-                    UNCERTAIN_THRESHOLD = 0.60
-
-                    if top_confidence < UNCERTAIN_THRESHOLD:
-                        status_class = "badge-warning"
-                        display_verdict = "⚠️ UNCERTAIN"
-                        summary = (
-                            f"The model does not have enough confidence to classify this as TRUE or FALSE. "
-                            f"Its highest prediction confidence is {top_confidence * 100:.1f}%."
-                        )
-                    elif prediction == 1:
-                        status_class = "badge-fake"
-                        display_verdict = "🚨 FALSE"
-                        summary = (
-                            f"The trained model predicts this news as FALSE with "
-                            f"{fake_prob * 100:.1f}% confidence."
-                        )
-                    else:
-                        status_class = "badge-real"
-                        display_verdict = "🟢 TRUE"
-                        summary = (
-                            f"The trained model predicts this news as TRUE with "
-                            f"{real_prob * 100:.1f}% confidence."
-                        )
-
-                    st.markdown(f"""
-                    <div style="
-                        background:rgba(30,41,59,0.82);
-                        padding:36px;
-                        border-radius:22px;
-                        margin-top:18px;
-                        border:1px solid rgba(148,163,184,0.16);
-                        box-shadow:0 10px 30px rgba(0,0,0,0.12);
-                    ">
-                        <span class="{status_class}">{display_verdict}</span>
-                        <h1 style="color:#f8fafc; font-size:3rem; margin:35px 0 28px 0;">
-                            Truth Index: {truth_index}%
-                        </h1>
-                        <p style="color:#cbd5e1; font-size:1.05rem; line-height:1.8; margin:0;">
-                            {summary}
-                        </p>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    st.caption(
-                        "Truth Index represents the model's estimated probability that the text is REAL. "
-                        "UNCERTAIN is shown when neither REAL nor FAKE reaches 60% confidence."
+                if top_confidence < UNCERTAIN_THRESHOLD:  # Handle predictions below the confidence threshold
+                    status_class = "badge-warning"
+                    display_verdict = "⚠️ UNCERTAIN"
+                    summary = (
+                        f"The model does not have enough confidence to classify this as TRUE or FALSE. "
+                        f"Its highest prediction confidence is {top_confidence * 100:.1f}%."
                     )
+                elif prediction == 1:  # Display the FAKE class result
+                    status_class = "badge-fake"
+                    display_verdict = "🚨 FALSE"
+                    summary = (
+                        f"The trained model predicts this news as FALSE with "
+                        f"{fake_prob * 100:.1f}% confidence."
+                    )
+                else:  # Display the REAL class result
+                    status_class = "badge-real"
+                    display_verdict = "🟢 TRUE"
+                    summary = (
+                        f"The trained model predicts this news as TRUE with "
+                        f"{real_prob * 100:.1f}% confidence."
+                    )
+
+                st.markdown(f"""
+                <div style="
+                    background:rgba(30,41,59,0.82);
+                    padding:36px;
+                    border-radius:22px;
+                    margin-top:18px;
+                    border:1px solid rgba(148,163,184,0.16);
+                    box-shadow:0 10px 30px rgba(0,0,0,0.12);
+                ">
+                    <span class="{status_class}">{display_verdict}</span>
+                    <h1 style="color:#f8fafc; font-size:3rem; margin:35px 0 28px 0;">
+                        Truth Index: {truth_index}%
+                    </h1>
+                    <p style="color:#cbd5e1; font-size:1.05rem; line-height:1.8; margin:0;">
+                        {summary}
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)  # Render verdict and confidence card
+
+                st.caption(  # Explain the displayed score
+                    "Truth Index represents the model's estimated probability that the text is REAL. "
+                    "UNCERTAIN is shown when neither REAL nor FAKE reaches 60% confidence."
+                )
