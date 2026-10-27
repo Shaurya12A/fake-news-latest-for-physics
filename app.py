@@ -258,10 +258,10 @@ with st.sidebar:  # Keep only the original example-news buttons in the sidebar
 
 # Main page heading and prediction interface
 st.markdown("<h1 style='color:#f8fafc; margin-bottom:5px;'>VeriFact AI Command Center</h1>", unsafe_allow_html=True)  # Main view heading
-st.markdown("<p style='color:#94a3b8;'>Local Fake-News Prediction</p>", unsafe_allow_html=True)  # Main view subtitle
+st.markdown("<p style='color:#94a3b8;'>Fake-News Prediction</p>", unsafe_allow_html=True)  # Main view subtitle
 st.markdown("### 🤖 Trained Model Predictor")  # Predictor section heading
 st.markdown(  # Explain the prediction mode
-    "<p style='color:#94a3b8;'>TF-IDF + Logistic Regression prediction using your trained fake-news model. This mode does not perform live web searches.</p>",
+    "<p style='color:#94a3b8;'>TF-IDF + Logistic Regression prediction using trained fake-news predictor model.</p>",
     unsafe_allow_html=True
 )
 
