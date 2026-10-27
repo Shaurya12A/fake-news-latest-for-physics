@@ -234,26 +234,26 @@ def train_local_model():  # Function to train and serialize the ML model
 
     return model, vectorizer, accuracy, len(data), y_test, test_pred  # Return artifacts and performance stats
 
-# Sidebar contains only sample news buttons. Clicking one places its text in the prediction box.
+# Sidebar contains the original VeriFact AI test-claim benchmarks.
+# Clicking a benchmark fills its claim into the prediction text box.
 EXAMPLE_NEWS = {
-    "Example 1 — Science": "The Earth revolves around the Sun, completing one orbit in about 365 days.",
-    "Example 2 — Health Claim": "A viral message claims that drinking bleach can safely cure common illnesses.",
-    "Example 3 — Unverified Report": "A social media post claims that all schools in a city will be closed tomorrow, but it does not cite an official announcement.",
+    "🔴 Fake: Plastic Currency Rumor": "The Reserve Bank of India has announced that all paper currency notes will be replaced with plastic bank notes next month.",
+    "🟢 Real: ISRO Gaganyaan Engine": "ISRO successfully completed core stage engine testing for the Gaganyaan human spaceflight mission.",
+    "🚨 Clickbait: 5G Scalar Waves": "BREAKING URGENT: Secret government plot leaked as 5G cell towers emit scalar frequencies!",
 }
 
-def choose_example(example_text):  # Put the selected sample into the text area before Streamlit reruns
+def choose_example(example_text):  # Place the selected example in the prediction input before rerun
     st.session_state["model_claim"] = example_text
 
-with st.sidebar:  # Keep the sidebar focused only on example news
-    st.markdown("### 📰 Example News")  # Sidebar heading
-    st.caption("Select an example to fill the prediction box.")  # Brief usage hint
-    for example_title, example_text in EXAMPLE_NEWS.items():  # Create one button for each sample
+with st.sidebar:  # Keep only the original example-news buttons in the sidebar
+    st.markdown("### ⚡ Test Claim Benchmarks")  # Original sidebar heading
+    for example_title, example_text in EXAMPLE_NEWS.items():  # Add one button for each original benchmark
         st.button(
-            example_title,  # Button label
-            key=f"example_{example_title}",  # Unique key for each button
-            use_container_width=True,  # Make the button fit the sidebar width
+            example_title,  # Original benchmark label
+            key=f"example_{example_title}",  # Unique Streamlit key
+            use_container_width=True,  # Match the sidebar width
             on_click=choose_example,  # Fill the prediction box when clicked
-            args=(example_text,)  # Pass the sample text to the callback
+            args=(example_text,)  # Pass the matching claim text
         )
 
 # Main page heading and prediction interface
