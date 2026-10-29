@@ -40,144 +40,112 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# VeriFact AI — Design D: Soft Blue Gradient (default interface theme)
+# VeriFact AI — Dark Command Center theme (default interface)
 st.markdown("""
 <style>
     :root {
-        --vf-navy: #17345f;
-        --vf-blue: #1769e0;
-        --vf-blue-dark: #124fb3;
-        --vf-sky: #48b5f8;
-        --vf-border: #c8dcfa;
-        --vf-muted: #536b8a;
+        --vf-bg: #07111f;
+        --vf-panel: #101e31;
+        --vf-panel-2: #142740;
+        --vf-blue: #25a7ff;
+        --vf-cyan: #36e0dc;
+        --vf-text: #e8f2ff;
+        --vf-muted: #9bb0ca;
+        --vf-border: #29415e;
     }
 
-    /* Soft blue canvas with a restrained gradient, not a plain white page. */
+    /* Dark navy canvas with a vivid blue/cyan command-center accent. */
     .stApp {
-        background: linear-gradient(135deg, #e7f1ff 0%, #f3f7ff 42%, #e5f0ff 100%) !important;
-        color: var(--vf-navy) !important;
+        background: radial-gradient(ellipse at 15% 0%, #12365a 0%, #09182a 34%, #060d18 100%) !important;
+        color: var(--vf-text) !important;
     }
-    [data-testid="stAppViewContainer"] {
+    [data-testid="stAppViewContainer"], [data-testid="stMain"] {
         background: transparent !important;
     }
     [data-testid="stMainBlockContainer"] {
         padding-top: 1.8rem;
         padding-bottom: 2.5rem;
     }
+    [data-testid="stHeader"] { background: rgba(6, 13, 24, 0.82) !important; }
 
-    /* A stronger blue sidebar gives the interface a clear visual anchor. */
+    /* Sidebar has a deep blue surface and a cyan accent edge. */
     [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #174fae 0%, #1769d2 52%, #2497e8 100%) !important;
-        border-right: 1px solid #3b82d0;
+        background: linear-gradient(180deg, #0d2340 0%, #0a1729 58%, #07111f 100%) !important;
+        border-right: 1px solid #1e4770;
     }
-    [data-testid="stSidebar"] * {
-        color: #ffffff !important;
-    }
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
-        color: #e6f2ff !important;
-    }
+    [data-testid="stSidebar"] * { color: #eaf5ff !important; }
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: #b7cce4 !important; }
     [data-testid="stSidebar"] [data-testid="stButton"] button {
-        background: rgba(255,255,255,0.14) !important;
-        border: 1px solid rgba(255,255,255,0.26) !important;
+        background: linear-gradient(100deg, #123a62, #15517a) !important;
+        border: 1px solid #2875a7 !important;
         color: #ffffff !important;
     }
 
-    /* Consistent typography, including headings originally given inline colors. */
+    /* High-contrast type for headings, body copy and helper text. */
     .stApp h1, .stApp h2, .stApp h3, .stApp h4 {
-        color: #174a91 !important;
+        color: #f1f7ff !important;
         letter-spacing: -0.025em;
     }
+    .stApp h1 { text-shadow: 0 0 24px rgba(37,167,255,0.16); }
     .stApp p, .stApp li, .stApp label,
-    [data-testid="stMarkdownContainer"],
-    [data-testid="stCaptionContainer"] {
-        color: #314967;
+    [data-testid="stMarkdownContainer"], [data-testid="stWidgetLabel"] {
+        color: #d5e3f4;
     }
-    .stApp [data-testid="stCaptionContainer"] {
-        color: #5c7190 !important;
-    }
+    .stApp [data-testid="stCaptionContainer"], .stApp small { color: #9bb0ca !important; }
 
-    /* Main content sections feel like layered blue-tinted glass cards. */
+    /* Reusable content and metric panels are intentionally dark, not white. */
     .command-card {
-        background: linear-gradient(145deg, rgba(255,255,255,0.96), rgba(225,239,255,0.94));
-        border: 1px solid #bdd5f7;
-        border-radius: 18px;
+        background: linear-gradient(145deg, #142740, #0c192b);
+        border: 1px solid #2b496a;
+        border-top: 2px solid #258ed0;
+        border-radius: 16px;
         padding: 24px;
         margin-bottom: 20px;
-        box-shadow: 0 8px 24px rgba(36, 91, 160, 0.09);
+        box-shadow: 0 12px 32px rgba(0,0,0,0.24);
     }
     .metric-box {
-        background: linear-gradient(145deg, #ffffff 0%, #e5f1ff 100%);
-        border: 1px solid #bdd7fb;
+        background: linear-gradient(145deg, #173451 0%, #0d1c2f 100%);
+        border: 1px solid #2b5276;
         border-radius: 14px;
         padding: 17px 14px;
         text-align: center;
-        box-shadow: 0 4px 14px rgba(35, 96, 174, 0.08);
+        box-shadow: 0 6px 20px rgba(0,0,0,0.22);
     }
-    .metric-value {
-        font-size: 2rem;
-        font-weight: 800;
-        color: #1769d2 !important;
-    }
-    .metric-label {
-        font-size: 0.75rem;
-        color: #526b8b !important;
-        text-transform: uppercase;
-        letter-spacing: 0.055em;
-    }
+    .metric-value { font-size: 2rem; font-weight: 800; color: #47c7ff !important; }
+    .metric-label { font-size: 0.75rem; color: #b2c7df !important; text-transform: uppercase; letter-spacing: 0.055em; }
 
-    /* Verdict badges remain distinct, but use gentle backgrounds and readable ink. */
-    .badge-real {
-        background: #e1f7ec;
-        color: #147345 !important;
-        border: 1px solid #8bd6b0;
-        padding: 6px 14px;
-        border-radius: 20px;
-        font-weight: 700;
-        font-size: 0.85rem;
-    }
-    .badge-fake {
-        background: #fff0f0;
-        color: #b42332 !important;
-        border: 1px solid #f1a7ae;
-        padding: 6px 14px;
-        border-radius: 20px;
-        font-weight: 700;
-        font-size: 0.85rem;
-    }
-    .badge-warning {
-        background: #fff5df;
-        color: #895600 !important;
-        border: 1px solid #f0cf83;
-        padding: 6px 14px;
-        border-radius: 20px;
-        font-weight: 700;
-        font-size: 0.85rem;
-    }
+    .badge-real { background: #103b34; color: #6ef0bc !important; border: 1px solid #247e68; padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.85rem; }
+    .badge-fake { background: #421e2a; color: #ff9ca8 !important; border: 1px solid #9a4055; padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.85rem; }
+    .badge-warning { background: #42331a; color: #ffd27a !important; border: 1px solid #94712c; padding: 6px 14px; border-radius: 20px; font-weight: 700; font-size: 0.85rem; }
 
-    /* Streamlit widgets share the same blue visual language. */
+    /* Buttons use saturated blue with a cyan hover glow. */
     .stButton > button, [data-testid="stDownloadButton"] > button,
     [data-testid="stFormSubmitButton"] > button {
-        background: linear-gradient(100deg, #1769e0 0%, #2698ed 100%) !important;
+        background: linear-gradient(100deg, #1269c7 0%, #168ed4 100%) !important;
         color: #ffffff !important;
-        border: 1px solid #1769d2 !important;
+        border: 1px solid #35b5ff !important;
         border-radius: 10px !important;
-        font-weight: 650 !important;
-        box-shadow: 0 4px 10px rgba(23, 105, 224, 0.18);
+        font-weight: 700 !important;
+        box-shadow: 0 4px 14px rgba(0,132,255,0.18);
         transition: transform 120ms ease, box-shadow 120ms ease;
     }
     .stButton > button:hover, [data-testid="stDownloadButton"] > button:hover,
     [data-testid="stFormSubmitButton"] > button:hover {
-        background: linear-gradient(100deg, #1255bd 0%, #1687dc 100%) !important;
-        border-color: #1255bd !important;
-        box-shadow: 0 6px 14px rgba(23, 105, 224, 0.25);
+        background: linear-gradient(100deg, #1685ed 0%, #15b8d0 100%) !important;
+        border-color: #65e8ff !important;
+        box-shadow: 0 0 18px rgba(35,190,255,0.28);
+        transform: translateY(-1px);
     }
+
+    /* Inputs, selectors, uploaders, tabs and expanders match the dark canvas. */
     input, textarea, [data-baseweb="select"] > div,
-    [data-baseweb="input"] > div {
-        background: #ffffff !important;
-        color: #1e385c !important;
-        border-color: #b7cff0 !important;
+    [data-baseweb="input"] > div, [data-baseweb="textarea"] {
+        background: #0d1b2d !important;
+        color: #edf6ff !important;
+        border-color: #355371 !important;
         border-radius: 9px !important;
     }
+    input::placeholder, textarea::placeholder { color: #8299b4 !important; }
     [data-testid="stMetric"], [data-testid="stAlert"],
     [data-testid="stExpander"], [data-testid="stDataFrame"],
     [data-testid="stTable"], [data-testid="stForm"],
@@ -186,41 +154,41 @@ st.markdown("""
     [data-testid="stRadio"], [data-testid="stCheckbox"],
     [data-testid="stNumberInput"], [data-testid="stDateInput"],
     [data-testid="stTabs"] [role="tabpanel"] {
-        border-color: #c8dcf7;
+        border-color: #29415e;
         border-radius: 12px;
     }
-    [data-testid="stExpander"] {
-        background: rgba(255,255,255,0.68);
+    [data-testid="stExpander"], [data-testid="stForm"],
+    [data-testid="stFileUploader"], [data-testid="stTabs"] [role="tabpanel"] {
+        background: rgba(13, 27, 45, 0.78) !important;
     }
-    hr, [data-testid="stDivider"] {
-        border-color: #c8dcf2 !important;
-    }
-    a { color: #1769c9; }
+    [data-testid="stFileUploader"] section { background: #0d1b2d !important; border-color: #355371 !important; }
+    [data-testid="stAlert"] { background: #11243a !important; color: #e3efff !important; }
+    [data-testid="stProgressBar"] > div > div { background: linear-gradient(90deg, #1685ed, #36e0dc) !important; }
+    hr, [data-testid="stDivider"] { border-color: #29415e !important; }
+    a { color: #55c8ff !important; }
 
-    /* Re-skin legacy inline dark result panels without changing their content. */
+    /* Preserve contrast in existing result panels with inline dark backgrounds. */
     [style*="background:rgba(15,23,42"],
     [style*="background: rgba(15, 23, 42"],
     [style*="background:rgba(167,139,250"] {
-        background: linear-gradient(135deg, #edf5ff, #dcecff) !important;
-        border-color: #b8d2f5 !important;
-        color: #243f63 !important;
+        background: linear-gradient(135deg, #142740, #0b1727) !important;
+        border-color: #315272 !important;
+        color: #e4efff !important;
     }
     [style*="background:rgba(15,23,42"] *,
     [style*="background: rgba(15, 23, 42"] *,
-    [style*="background:rgba(167,139,250"] * {
-        color: #243f63 !important;
-    }
+    [style*="background:rgba(167,139,250"] * { color: #e4efff !important; }
 
-    /* Keep native data tables polished and legible. */
-    [data-testid="stDataFrame"] th,
-    [data-testid="stTable"] th {
-        background: #dceaff !important;
-        color: #174a91 !important;
+    /* Data grids use dark headers and readable light text. */
+    [data-testid="stDataFrame"] th, [data-testid="stTable"] th {
+        background: #183653 !important;
+        color: #eaf5ff !important;
     }
-    [data-testid="stDataFrame"] td,
-    [data-testid="stTable"] td {
-        color: #263f60 !important;
+    [data-testid="stDataFrame"] td, [data-testid="stTable"] td {
+        background: #0d1b2d !important;
+        color: #d8e7f8 !important;
     }
+    [data-testid="stDataFrame"] [role="grid"] { background: #0d1b2d !important; }
 </style>
 """, unsafe_allow_html=True)
 
