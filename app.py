@@ -111,6 +111,164 @@ st.markdown("""
         text-transform: uppercase;
         letter-spacing: 0.05em;
     }
+
+    /*
+      PRINT-ONLY THEME — Design D: soft blue + white.
+      The existing on-screen interface and application logic are unchanged.
+    */
+    @media print {
+        @page {
+            size: A4 landscape;
+            margin: 10mm;
+        }
+
+        html, body, .stApp,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        [data-testid="stMainBlockContainer"],
+        [data-testid="stSidebar"],
+        [data-testid="stSidebarContent"],
+        [data-testid="stVerticalBlock"],
+        [data-testid="stHorizontalBlock"] {
+            background: #ffffff !important;
+            background-color: #ffffff !important;
+            color: #172b4d !important;
+            box-shadow: none !important;
+            text-shadow: none !important;
+            backdrop-filter: none !important;
+        }
+
+        /* Replace the dark theme's default text, including inline-styled headings. */
+        .stApp, .stApp * {
+            color: #172b4d !important;
+            text-shadow: none !important;
+        }
+
+        h1, h2, h3, h4, h5, h6,
+        [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stMarkdownContainer"] h3 {
+            color: #174ea6 !important;
+            page-break-after: avoid;
+            break-after: avoid;
+        }
+
+        p, li, label, small, span, strong, em,
+        [data-testid="stMarkdownContainer"],
+        [data-testid="stCaptionContainer"] {
+            color: #26364b !important;
+        }
+
+        /* Convert custom dark cards and metric boxes to light, print-friendly cards. */
+        .command-card,
+        .metric-box,
+        [data-testid="stMetric"],
+        [data-testid="stAlert"],
+        [data-testid="stExpander"],
+        [data-testid="stDataFrame"],
+        [data-testid="stTable"],
+        [data-testid="stForm"],
+        [data-testid="stFileUploader"],
+        [data-testid="stTextInput"],
+        [data-testid="stTextArea"],
+        [data-testid="stSelectbox"],
+        [data-testid="stRadio"],
+        [data-testid="stCheckbox"],
+        [data-testid="stNumberInput"],
+        [data-testid="stDateInput"],
+        [data-testid="stTabs"] [role="tabpanel"] {
+            background: #f5f9ff !important;
+            background-color: #f5f9ff !important;
+            border: 1px solid #cbdcf5 !important;
+            border-radius: 8px !important;
+            box-shadow: none !important;
+            backdrop-filter: none !important;
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+
+        .metric-value {
+            color: #1769c2 !important;
+        }
+
+        .metric-label {
+            color: #52657d !important;
+        }
+
+        .badge-real {
+            background: #e7f6ed !important;
+            color: #17663a !important;
+            border-color: #9dd8b4 !important;
+        }
+
+        .badge-fake {
+            background: #fff0f0 !important;
+            color: #a61b1b !important;
+            border-color: #efb0b0 !important;
+        }
+
+        .badge-warning {
+            background: #fff7e5 !important;
+            color: #875400 !important;
+            border-color: #efd18a !important;
+        }
+
+        /* Light blue accents for controls; retain their labels and values on paper. */
+        .stButton > button,
+        [data-testid="stDownloadButton"] > button,
+        [data-testid="stFormSubmitButton"] > button {
+            background: #eaf3ff !important;
+            color: #174ea6 !important;
+            border: 1px solid #a9c8f5 !important;
+            box-shadow: none !important;
+        }
+
+        input, textarea,
+        [data-baseweb="select"] > div,
+        [data-baseweb="input"] > div {
+            background: #ffffff !important;
+            color: #172b4d !important;
+            border-color: #b8c9df !important;
+        }
+
+        hr, [data-testid="stDivider"] {
+            border-color: #d7e3f3 !important;
+        }
+
+        /* Remove browser/app chrome, not the app's actual content or sidebar information. */
+        [data-testid="stHeader"],
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"],
+        footer,
+        #MainMenu {
+            display: none !important;
+            visibility: hidden !important;
+        }
+
+        /* Keep content compact and avoid splitting individual result cards across pages. */
+        [data-testid="stMainBlockContainer"] {
+            max-width: 100% !important;
+            padding: 0 !important;
+        }
+
+        .command-card, .metric-box, table, tr,
+        [data-testid="stAlert"],
+        [data-testid="stExpander"] {
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+
+        a {
+            color: #174ea6 !important;
+            text-decoration: underline !important;
+        }
+
+        * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
