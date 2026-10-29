@@ -40,234 +40,186 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Command Center Glassmorphism Styling
+# VeriFact AI — Design D: Soft Blue Gradient (default interface theme)
 st.markdown("""
 <style>
-    /* Dark Theme Base */
-    .stApp {
-        background-color: #0f172a;
-        color: #f8fafc;
+    :root {
+        --vf-navy: #17345f;
+        --vf-blue: #1769e0;
+        --vf-blue-dark: #124fb3;
+        --vf-sky: #48b5f8;
+        --vf-border: #c8dcfa;
+        --vf-muted: #536b8a;
     }
-    
-    /* Card Container */
+
+    /* Soft blue canvas with a restrained gradient, not a plain white page. */
+    .stApp {
+        background: linear-gradient(135deg, #e7f1ff 0%, #f3f7ff 42%, #e5f0ff 100%) !important;
+        color: var(--vf-navy) !important;
+    }
+    [data-testid="stAppViewContainer"] {
+        background: transparent !important;
+    }
+    [data-testid="stMainBlockContainer"] {
+        padding-top: 1.8rem;
+        padding-bottom: 2.5rem;
+    }
+
+    /* A stronger blue sidebar gives the interface a clear visual anchor. */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #174fae 0%, #1769d2 52%, #2497e8 100%) !important;
+        border-right: 1px solid #3b82d0;
+    }
+    [data-testid="stSidebar"] * {
+        color: #ffffff !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+        color: #e6f2ff !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stButton"] button {
+        background: rgba(255,255,255,0.14) !important;
+        border: 1px solid rgba(255,255,255,0.26) !important;
+        color: #ffffff !important;
+    }
+
+    /* Consistent typography, including headings originally given inline colors. */
+    .stApp h1, .stApp h2, .stApp h3, .stApp h4 {
+        color: #174a91 !important;
+        letter-spacing: -0.025em;
+    }
+    .stApp p, .stApp li, .stApp label,
+    [data-testid="stMarkdownContainer"],
+    [data-testid="stCaptionContainer"] {
+        color: #314967;
+    }
+    .stApp [data-testid="stCaptionContainer"] {
+        color: #5c7190 !important;
+    }
+
+    /* Main content sections feel like layered blue-tinted glass cards. */
     .command-card {
-        background: rgba(30, 41, 59, 0.7);
-        backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 16px;
+        background: linear-gradient(145deg, rgba(255,255,255,0.96), rgba(225,239,255,0.94));
+        border: 1px solid #bdd5f7;
+        border-radius: 18px;
         padding: 24px;
         margin-bottom: 20px;
+        box-shadow: 0 8px 24px rgba(36, 91, 160, 0.09);
     }
-    
-    /* Status Badges */
-    .badge-real {
-        background-color: rgba(16, 185, 129, 0.15);
-        color: #34d399;
-        border: 1px solid rgba(16, 185, 129, 0.4);
-        padding: 6px 14px;
-        border-radius: 20px;
-        font-weight: 700;
-        font-size: 0.85rem;
-    }
-    
-    .badge-fake {
-        background-color: rgba(239, 68, 68, 0.15);
-        color: #f87171;
-        border: 1px solid rgba(239, 68, 68, 0.4);
-        padding: 6px 14px;
-        border-radius: 20px;
-        font-weight: 700;
-        font-size: 0.85rem;
-    }
-    
-    .badge-warning {
-        background-color: rgba(245, 158, 11, 0.15);
-        color: #fbbf24;
-        border: 1px solid rgba(245, 158, 11, 0.4);
-        padding: 6px 14px;
-        border-radius: 20px;
-        font-weight: 700;
-        font-size: 0.85rem;
-    }
-
-    /* Metric Gauge Box */
     .metric-box {
-        background: rgba(15, 23, 42, 0.8);
-        border: 1px solid rgba(255, 255, 255, 0.05);
-        border-radius: 12px;
-        padding: 16px;
+        background: linear-gradient(145deg, #ffffff 0%, #e5f1ff 100%);
+        border: 1px solid #bdd7fb;
+        border-radius: 14px;
+        padding: 17px 14px;
         text-align: center;
+        box-shadow: 0 4px 14px rgba(35, 96, 174, 0.08);
     }
-
     .metric-value {
         font-size: 2rem;
         font-weight: 800;
-        color: #38bdf8;
+        color: #1769d2 !important;
     }
-
     .metric-label {
         font-size: 0.75rem;
-        color: #94a3b8;
+        color: #526b8b !important;
         text-transform: uppercase;
-        letter-spacing: 0.05em;
+        letter-spacing: 0.055em;
     }
 
-    /*
-      PRINT-ONLY THEME — Design D: soft blue + white.
-      The existing on-screen interface and application logic are unchanged.
-    */
-    @media print {
-        @page {
-            size: A4 landscape;
-            margin: 10mm;
-        }
+    /* Verdict badges remain distinct, but use gentle backgrounds and readable ink. */
+    .badge-real {
+        background: #e1f7ec;
+        color: #147345 !important;
+        border: 1px solid #8bd6b0;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 700;
+        font-size: 0.85rem;
+    }
+    .badge-fake {
+        background: #fff0f0;
+        color: #b42332 !important;
+        border: 1px solid #f1a7ae;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 700;
+        font-size: 0.85rem;
+    }
+    .badge-warning {
+        background: #fff5df;
+        color: #895600 !important;
+        border: 1px solid #f0cf83;
+        padding: 6px 14px;
+        border-radius: 20px;
+        font-weight: 700;
+        font-size: 0.85rem;
+    }
 
-        html, body, .stApp,
-        [data-testid="stAppViewContainer"],
-        [data-testid="stMain"],
-        [data-testid="stMainBlockContainer"],
-        [data-testid="stSidebar"],
-        [data-testid="stSidebarContent"],
-        [data-testid="stVerticalBlock"],
-        [data-testid="stHorizontalBlock"] {
-            background: #ffffff !important;
-            background-color: #ffffff !important;
-            color: #172b4d !important;
-            box-shadow: none !important;
-            text-shadow: none !important;
-            backdrop-filter: none !important;
-        }
+    /* Streamlit widgets share the same blue visual language. */
+    .stButton > button, [data-testid="stDownloadButton"] > button,
+    [data-testid="stFormSubmitButton"] > button {
+        background: linear-gradient(100deg, #1769e0 0%, #2698ed 100%) !important;
+        color: #ffffff !important;
+        border: 1px solid #1769d2 !important;
+        border-radius: 10px !important;
+        font-weight: 650 !important;
+        box-shadow: 0 4px 10px rgba(23, 105, 224, 0.18);
+        transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    .stButton > button:hover, [data-testid="stDownloadButton"] > button:hover,
+    [data-testid="stFormSubmitButton"] > button:hover {
+        background: linear-gradient(100deg, #1255bd 0%, #1687dc 100%) !important;
+        border-color: #1255bd !important;
+        box-shadow: 0 6px 14px rgba(23, 105, 224, 0.25);
+    }
+    input, textarea, [data-baseweb="select"] > div,
+    [data-baseweb="input"] > div {
+        background: #ffffff !important;
+        color: #1e385c !important;
+        border-color: #b7cff0 !important;
+        border-radius: 9px !important;
+    }
+    [data-testid="stMetric"], [data-testid="stAlert"],
+    [data-testid="stExpander"], [data-testid="stDataFrame"],
+    [data-testid="stTable"], [data-testid="stForm"],
+    [data-testid="stFileUploader"], [data-testid="stTextInput"],
+    [data-testid="stTextArea"], [data-testid="stSelectbox"],
+    [data-testid="stRadio"], [data-testid="stCheckbox"],
+    [data-testid="stNumberInput"], [data-testid="stDateInput"],
+    [data-testid="stTabs"] [role="tabpanel"] {
+        border-color: #c8dcf7;
+        border-radius: 12px;
+    }
+    [data-testid="stExpander"] {
+        background: rgba(255,255,255,0.68);
+    }
+    hr, [data-testid="stDivider"] {
+        border-color: #c8dcf2 !important;
+    }
+    a { color: #1769c9; }
 
-        /* Replace the dark theme's default text, including inline-styled headings. */
-        .stApp, .stApp * {
-            color: #172b4d !important;
-            text-shadow: none !important;
-        }
+    /* Re-skin legacy inline dark result panels without changing their content. */
+    [style*="background:rgba(15,23,42"],
+    [style*="background: rgba(15, 23, 42"],
+    [style*="background:rgba(167,139,250"] {
+        background: linear-gradient(135deg, #edf5ff, #dcecff) !important;
+        border-color: #b8d2f5 !important;
+        color: #243f63 !important;
+    }
+    [style*="background:rgba(15,23,42"] *,
+    [style*="background: rgba(15, 23, 42"] *,
+    [style*="background:rgba(167,139,250"] * {
+        color: #243f63 !important;
+    }
 
-        h1, h2, h3, h4, h5, h6,
-        [data-testid="stMarkdownContainer"] h1,
-        [data-testid="stMarkdownContainer"] h2,
-        [data-testid="stMarkdownContainer"] h3 {
-            color: #174ea6 !important;
-            page-break-after: avoid;
-            break-after: avoid;
-        }
-
-        p, li, label, small, span, strong, em,
-        [data-testid="stMarkdownContainer"],
-        [data-testid="stCaptionContainer"] {
-            color: #26364b !important;
-        }
-
-        /* Convert custom dark cards and metric boxes to light, print-friendly cards. */
-        .command-card,
-        .metric-box,
-        [data-testid="stMetric"],
-        [data-testid="stAlert"],
-        [data-testid="stExpander"],
-        [data-testid="stDataFrame"],
-        [data-testid="stTable"],
-        [data-testid="stForm"],
-        [data-testid="stFileUploader"],
-        [data-testid="stTextInput"],
-        [data-testid="stTextArea"],
-        [data-testid="stSelectbox"],
-        [data-testid="stRadio"],
-        [data-testid="stCheckbox"],
-        [data-testid="stNumberInput"],
-        [data-testid="stDateInput"],
-        [data-testid="stTabs"] [role="tabpanel"] {
-            background: #f5f9ff !important;
-            background-color: #f5f9ff !important;
-            border: 1px solid #cbdcf5 !important;
-            border-radius: 8px !important;
-            box-shadow: none !important;
-            backdrop-filter: none !important;
-            break-inside: avoid;
-            page-break-inside: avoid;
-        }
-
-        .metric-value {
-            color: #1769c2 !important;
-        }
-
-        .metric-label {
-            color: #52657d !important;
-        }
-
-        .badge-real {
-            background: #e7f6ed !important;
-            color: #17663a !important;
-            border-color: #9dd8b4 !important;
-        }
-
-        .badge-fake {
-            background: #fff0f0 !important;
-            color: #a61b1b !important;
-            border-color: #efb0b0 !important;
-        }
-
-        .badge-warning {
-            background: #fff7e5 !important;
-            color: #875400 !important;
-            border-color: #efd18a !important;
-        }
-
-        /* Light blue accents for controls; retain their labels and values on paper. */
-        .stButton > button,
-        [data-testid="stDownloadButton"] > button,
-        [data-testid="stFormSubmitButton"] > button {
-            background: #eaf3ff !important;
-            color: #174ea6 !important;
-            border: 1px solid #a9c8f5 !important;
-            box-shadow: none !important;
-        }
-
-        input, textarea,
-        [data-baseweb="select"] > div,
-        [data-baseweb="input"] > div {
-            background: #ffffff !important;
-            color: #172b4d !important;
-            border-color: #b8c9df !important;
-        }
-
-        hr, [data-testid="stDivider"] {
-            border-color: #d7e3f3 !important;
-        }
-
-        /* Remove browser/app chrome, not the app's actual content or sidebar information. */
-        [data-testid="stHeader"],
-        [data-testid="stToolbar"],
-        [data-testid="stDecoration"],
-        [data-testid="stStatusWidget"],
-        footer,
-        #MainMenu {
-            display: none !important;
-            visibility: hidden !important;
-        }
-
-        /* Keep content compact and avoid splitting individual result cards across pages. */
-        [data-testid="stMainBlockContainer"] {
-            max-width: 100% !important;
-            padding: 0 !important;
-        }
-
-        .command-card, .metric-box, table, tr,
-        [data-testid="stAlert"],
-        [data-testid="stExpander"] {
-            break-inside: avoid;
-            page-break-inside: avoid;
-        }
-
-        a {
-            color: #174ea6 !important;
-            text-decoration: underline !important;
-        }
-
-        * {
-            -webkit-print-color-adjust: exact !important;
-            print-color-adjust: exact !important;
-        }
+    /* Keep native data tables polished and legible. */
+    [data-testid="stDataFrame"] th,
+    [data-testid="stTable"] th {
+        background: #dceaff !important;
+        color: #174a91 !important;
+    }
+    [data-testid="stDataFrame"] td,
+    [data-testid="stTable"] td {
+        color: #263f60 !important;
     }
 </style>
 """, unsafe_allow_html=True)
