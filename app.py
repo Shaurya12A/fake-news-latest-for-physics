@@ -127,15 +127,46 @@ st.markdown("""
         border: 1px solid #e2e8f0 !important; border-radius: 10px 10px 7px 7px !important;
         padding: 8px 15px !important; font-weight: 650 !important;
     }
-    [data-testid="stTabs"] button[role="tab"]:nth-child(1) { background: #eef2ff !important; }
-    [data-testid="stTabs"] button[role="tab"]:nth-child(2) { background: #f3e8ff !important; }
-    [data-testid="stTabs"] button[role="tab"]:nth-child(3) { background: #ccfbf1 !important; }
-    [data-testid="stTabs"] button[role="tab"]:nth-child(4) { background: #ffedd5 !important; }
-    [data-testid="stTabs"] button[role="tab"]:nth-child(5) { background: #fce7f3 !important; }
-    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
-        color: #ffffff !important; background: linear-gradient(105deg, #4f46e5, #7c3aed) !important;
-        border-color: #6366f1 !important; box-shadow: 0 4px 10px rgba(99,102,241,.18);
+    /* Each tab gets its own colour theme: tinted pill + coloured text when idle,
+       solid gradient + white text when selected. */
+    [data-testid="stTabs"] button[role="tab"] p { font-weight: 650 !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(1) { background: #e0e7ff !important; border-color: #a5b4fc !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(1) p { color: #3730a3 !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(2) { background: #dcfce7 !important; border-color: #86efac !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(2) p { color: #166534 !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(3) { background: #ffedd5 !important; border-color: #fdba74 !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(3) p { color: #9a3412 !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(4) { background: #fce7f3 !important; border-color: #f9a8d4 !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(4) p { color: #9d174d !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(5) { background: #cffafe !important; border-color: #67e8f9 !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(5) p { color: #155e75 !important; }
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] { box-shadow: 0 5px 12px rgba(0,0,0,.16); }
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] p { color: #ffffff !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(1)[aria-selected="true"] { background: linear-gradient(105deg, #4f46e5, #7c3aed) !important; border-color: #4f46e5 !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(2)[aria-selected="true"] { background: linear-gradient(105deg, #16a34a, #0d9488) !important; border-color: #16a34a !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(3)[aria-selected="true"] { background: linear-gradient(105deg, #ea580c, #f59e0b) !important; border-color: #ea580c !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(4)[aria-selected="true"] { background: linear-gradient(105deg, #db2777, #e11d48) !important; border-color: #db2777 !important; }
+    [data-testid="stTabs"] button[role="tab"]:nth-child(5)[aria-selected="true"] { background: linear-gradient(105deg, #0891b2, #2563eb) !important; border-color: #0891b2 !important; }
+    [data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: transparent !important; }
+
+    /* Keep text on buttons readable (inner <p> otherwise inherits dark body text). */
+    .stButton > button *, [data-testid="stDownloadButton"] > button *,
+    [data-testid="stFormSubmitButton"] > button *, [data-testid="stLinkButton"] a *,
+    [data-testid="stSidebar"] [data-testid="stButton"] button * { color: #ffffff !important; }
+    [data-testid="stLinkButton"] a {
+        background: linear-gradient(105deg, #16a34a, #0d9488) !important; color: #ffffff !important;
+        border: 0 !important; border-radius: 10px !important; font-weight: 700 !important;
     }
+
+    /* Text inside the verdict card must be dark on the light card. */
+    .command-card p { color: #334155 !important; }
+    .command-card h2, .command-card h3 { color: #172554 !important; }
+
+    /* Code / copy blocks: light background, dark text. */
+    [data-testid="stCode"], [data-testid="stCode"] pre, [data-testid="stCode"] code {
+        background: #f8fafc !important; color: #1e293b !important;
+    }
+    [data-testid="stCode"] { border: 1px solid #e2e8f0; border-radius: 10px; }
     [data-testid="stTabs"] [role="tabpanel"] {
         background: #ffffff !important; border: 1px solid #e2e8f0 !important;
         border-radius: 0 12px 12px 12px; padding: 18px 12px 10px;
@@ -1417,8 +1448,8 @@ def analyze_image_forensics(file_bytes):
     return result
 
 with st.sidebar:
-    st.markdown("<h2 style='color:#34d399; margin-bottom:0;'>🛡️ VeriFact AI</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='color:#94a3b8; font-size:0.8rem;'>Misinformation Command Center</p>", unsafe_allow_html=True)
+    st.markdown("<h2 style='color:#4f46e5; margin-bottom:0;'>🛡️ VeriFact AI</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#53617d; font-size:0.8rem;'>Misinformation Command Center</p>", unsafe_allow_html=True)
     st.divider()
     
     analysis_mode = st.radio(
@@ -1445,8 +1476,8 @@ with st.sidebar:
         help="Displays what the feedback-trained model would predict, alongside the main verdict. Purely informational - it never changes the main verdict, truth index, or confidence scores above."
     )
 
-st.markdown("<h1 style='color:#f8fafc; margin-bottom:5px;'>VeriFact AI Command Center</h1>", unsafe_allow_html=True)
-st.markdown("<p style='color:#94a3b8;'>Real-Time Live Web Grounding & Media Authenticator Engine</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:#172554; margin-bottom:5px;'>VeriFact AI Command Center</h1>", unsafe_allow_html=True)
+st.markdown("<p style='color:#475569;'>Real-Time Live Web Grounding & Media Authenticator Engine</p>", unsafe_allow_html=True)
 
 if analysis_mode == "📰 Text / Article Fact-Checker":
     
